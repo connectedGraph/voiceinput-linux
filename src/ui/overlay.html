@@ -64,6 +64,7 @@ html,body{width:100%;height:100%;background:transparent;overflow:hidden;
 .txt{flex:1;min-width:0;font-size:13.5px;color:var(--tx3);white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis;transition:color .2s}
 .txt.has{color:var(--tx)}
+.cur{display:inline-block;width:2px;height:14px;background:var(--ac);vertical-align:-2px;margin-left:2px;animation:blink 1s steps(2) infinite}
 .time{flex:0 0 auto;font-size:11.5px;color:var(--tx3);
   font-family:"Geist Mono","Fira Mono",monospace;font-variant-numeric:tabular-nums}
 .ok{flex:0 0 auto;display:flex;align-items:center;gap:6px;color:var(--ok);font-size:11.5px;
@@ -90,6 +91,7 @@ const hud = document.getElementById('hud');
 const txt = document.getElementById('txt');
 const time = document.getElementById('time');
 const bars = [...document.querySelectorAll('.bars i')];
+const esc = (t) => String(t).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let t0 = 0, timer = null, lastPhase = '';
 
 function setClock(ms) {
@@ -131,7 +133,8 @@ window.api.onState((s) => {
     bars.forEach(b => { b.style.height = ''; });
     setClock(s.durationMs || 0);
     txt.className = s.text ? 'txt has' : 'txt';
-    txt.textContent = s.text || '识别中…';
+    if (s.text) txt.innerHTML = esc(s.text) + '<span class="cur"></span>';
+    else txt.textContent = '识别中…';
   } else if (s.phase === 'injecting') {
     hud.classList.add('show', 'settle');
     txt.className = 'txt has';
