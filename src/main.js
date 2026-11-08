@@ -10,6 +10,8 @@ const { inject, has } = require('./inject');
 const { HotkeyWatcher } = require('./evdev');
 
 // 单实例
+app.setName('MiMo ASR');
+
 if (!app.requestSingleInstanceLock()) {
   app.quit();
   process.exit(0);
@@ -84,7 +86,8 @@ function createMainWindow() {
   // 无边框窗口上 ready-to-show 不保证触发，兜底 2 秒后强制显示
   setTimeout(reveal, 2000);
   mainWin.on('close', (e) => {
-    if (!app.isQuitting) { e.preventDefault(); mainWin.hide(); }
+    // 托盘图标在部分桌面环境下不可见，隐藏窗口会让人找不回来，所以缩到任务栏
+    if (!app.isQuitting) { e.preventDefault(); mainWin.minimize(); }
   });
   mainWin.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
 }
@@ -171,6 +174,8 @@ function buildTray() {
     { type: 'separator' },
     { label: zh ? '退出' : 'Quit', click: () => { app.isQuitting = true; app.quit(); } }
   ]);
+  // Linux 上 setTitle 通常无效，但 SNI 的 Title 为空时 COSMIC 面板不渲染该条目
+  try { tray.setTitle('MiMo ASR'); } catch (_) {}
   tray.setContextMenu(menu);
   tray.on('click', () => { mainWin.show(); mainWin.focus(); });
   updateTray();
@@ -392,7 +397,7 @@ function registerIpc() {
   });
 
   ipcMain.handle('win:minimize', () => mainWin.minimize());
-  ipcMain.handle('win:hide', () => mainWin.hide());
+  ipcMain.handle('win:hide', () => mainWin.minimize());
   ipcMain.handle('app:quit', () => { app.isQuitting = true; app.quit(); });
   ipcMain.handle('app:open-config-dir', () => shell.openPath(config.CONFIG_DIR));
   ipcMain.handle('env:check', () => ({
