@@ -71,7 +71,8 @@ function createMainWindow() {
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      backgroundThrottling: false
     }
   });
   mainWin.loadFile(path.join(__dirname, 'ui', 'index.html'));
@@ -124,9 +125,11 @@ function createOverlay() {
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      backgroundThrottling: false
     }
   });
+  try { overlayWin.webContents.setBackgroundThrottling(false); } catch (_) {}
   overlayWin.loadFile(path.join(__dirname, 'ui', 'overlay.html'));
   overlayWin.setAlwaysOnTop(true, 'screen-saver');
   overlayWin.setIgnoreMouseEvents(true, { forward: true });
