@@ -73,7 +73,16 @@ function createMainWindow() {
     }
   });
   mainWin.loadFile(path.join(__dirname, 'ui', 'index.html'));
-  mainWin.once('ready-to-show', () => mainWin.show());
+
+  const reveal = () => {
+    if (!mainWin || mainWin.isDestroyed()) return;
+    if (!mainWin.isVisible()) mainWin.show();
+    mainWin.focus();
+  };
+  mainWin.once('ready-to-show', reveal);
+  mainWin.webContents.once('did-finish-load', reveal);
+  // 无边框窗口上 ready-to-show 不保证触发，兜底 2 秒后强制显示
+  setTimeout(reveal, 2000);
   mainWin.on('close', (e) => {
     if (!app.isQuitting) { e.preventDefault(); mainWin.hide(); }
   });
@@ -395,7 +404,15 @@ function registerIpc() {
 
 /* ---------------- 启动 ---------------- */
 
-app.on('second-instance', () => { if (mainWin) { mainWin.show(); mainWin.focus(); } });
+function revealMainWindow() {
+  if (!mainWin || mainWin.isDestroyed()) return;
+  if (mainWin.isMinimized()) mainWin.restore();
+  mainWin.show();
+  mainWin.focus();
+  mainWin.moveTop();
+}
+
+app.on('second-instance', revealMainWindow);
 
 app.whenReady().then(() => {
   createMainWindow();
