@@ -64,7 +64,7 @@ DESK
 
 ln -sf "$DIR/bin/mimo-asr.js" "$HOME/.local/bin/mimo-asr"
 
-if ! getfacl /dev/input/event3 2>/dev/null | grep -q "u:$USER_NAME:"; then
+if ! getfacl /dev/input/event3 2>/dev/null | grep -q "user:$USER_NAME:"; then
   warn "全局热键尚未授权，执行：sudo ./install.sh --grant-input"
 fi
 

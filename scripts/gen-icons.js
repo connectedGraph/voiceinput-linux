@@ -46,50 +46,112 @@ function roundedRectAlpha(x, y, w, h, r) {
   return Math.max(0, Math.min(1, r - d + 0.5));
 }
 
-function drawIcon(size, opts = {}) {
-  const { bg = [42, 33, 24], fg = [231, 164, 92], transparent = false, pad = 0 } = opts;
-  const w = size, h = size;
-  const buf = Buffer.alloc(w * h * 4);
-  const scale = size / 256;
-  // 三根竖条
-  const bars = [
-    { x: 88, w: 18, h: 62, o: 0.55 },
-    { x: 119, w: 18, h: 104, o: 1.0 },
-    { x: 150, w: 18, h: 78, o: 0.8 }
-  ].map(b => ({
-    x: (b.x + pad) * scale, w: b.w * scale,
-    h: b.h * scale, y: 0, o: b.o
+function mix(a, b, t) {
+  return [
+    Math.round(a[0] + (b[0] - a[0]) * t),
+    Math.round(a[1] + (b[1] - a[1]) * t),
+    Math.round(a[2] + (b[2] - a[2]) * t)
+  ];
+}
+
+/**
+ * 画一个圆角方块 + 三根竖条。
+ * 托盘图标是给面板缩放用的，所以形状要粗、对比要硬，别用细节。
+ */
+function drawBadge(size, opts = {}) {
+  const {
+    bg = [231, 164, 92],
+    fg = [21, 24, 27],
+    bg2 = null,             // 竖向渐变的下端
+    radius = 0.24,          // 相对尺寸
+    barW = 0.135,           // 相对尺寸
+    barHeights = [0.34, 0.58, 0.44],
+    gap = 0.075,
+    opaque = false
+  } = opts;
+
+  const buf = Buffer.alloc(size * size * 4);
+  const r = size * radius;
+  const bw = size * barW;
+  const gapPx = size * gap;
+  const totalW = bw * 3 + gapPx * 2;
+  const startX = (size - totalW) / 2;
+  const cy = size / 2;
+  const barR = Math.min(bw / 2, size * 0.055);
+
+  const bars = barHeights.map((h, i) => ({
+    x: startX + i * (bw + gapPx),
+    w: bw,
+    h: size * h,
+    y: cy - (size * h) / 2
   }));
 
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const i = (y * w + x) * 4;
-      let a = transparent ? 0 : roundedRectAlpha(x + 0.5 - pad * scale, y + 0.5 - pad * scale, w - 2 * pad * scale, h - 2 * pad * scale, 52 * scale);
-      let r = bg[0], g = bg[1], b = bg[2];
-      let alpha = a;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const i = (y * size + x) * 4;
+      const inside = roundedRectAlpha(x + 0.5, y + 0.5, size, size, r);
+
+      let col = bg2 ? mix(bg, bg2, y / size) : bg;
+      let alpha = opaque ? 1 : inside;
 
       for (const bar of bars) {
-        const by = (128 * scale) - bar.h / 2;
-        const rr = Math.min(bar.w / 2, 9 * scale);
-        const inside = roundedRectAlpha(x + 0.5 - bar.x, y + 0.5 - by, bar.w, bar.h, rr);
-        if (inside > 0) {
-          const o = bar.o;
-          r = Math.round(r * (1 - inside) + fg[0] * inside);
-          g = Math.round(g * (1 - inside) + fg[1] * inside);
-          b = Math.round(b * (1 - inside) + fg[2] * inside);
-          alpha = Math.max(alpha, inside * (o * 0.35 + 0.65));
-          if (transparent) alpha = Math.max(alpha, inside * o);
+        const bi = roundedRectAlpha(x + 0.5 - bar.x, y + 0.5 - bar.y, bar.w, bar.h, barR);
+        if (bi > 0) {
+          col = mix(col, fg, bi);
+          if (bi > 0.5) alpha = Math.max(alpha, inside);
         }
       }
-      buf[i] = r; buf[i + 1] = g; buf[i + 2] = b; buf[i + 3] = Math.round(alpha * 255);
+
+      buf[i] = col[0]; buf[i + 1] = col[1]; buf[i + 2] = col[2];
+      buf[i + 3] = Math.round(alpha * 255);
     }
   }
-  return encodePNG(w, h, buf);
+  return encodePNG(size, size, buf);
+}
+
+/** 应用图标：深色底 + 琥珀声波 */
+function drawAppIcon(size) {
+  const buf = Buffer.alloc(size * size * 4);
+  const scale = size / 256;
+  const body = [42, 33, 24];
+  const accent = [231, 164, 92];
+  const bars = [
+    { x: 88, w: 18, h: 62, o: 0.62 },
+    { x: 119, w: 18, h: 104, o: 1.0 },
+    { x: 150, w: 18, h: 78, o: 0.85 }
+  ].map((b) => ({ x: b.x * scale, w: b.w * scale, h: b.h * scale, o: b.o }));
+
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const i = (y * size + x) * 4;
+      let alpha = roundedRectAlpha(x + 0.5, y + 0.5, size, size, 52 * scale);
+      let col = body.slice();
+
+      for (const bar of bars) {
+        const by = 128 * scale - bar.h / 2;
+        const inside = roundedRectAlpha(x + 0.5 - bar.x, y + 0.5 - by, bar.w, bar.h, Math.min(bar.w / 2, 9 * scale));
+        if (inside > 0) col = mix(col, accent, inside * bar.o);
+      }
+
+      buf[i] = col[0]; buf[i + 1] = col[1]; buf[i + 2] = col[2];
+      buf[i + 3] = Math.round(alpha * 255);
+    }
+  }
+  return encodePNG(size, size, buf);
 }
 
 const out = path.join(__dirname, '..', 'assets');
 fs.mkdirSync(out, { recursive: true });
-fs.writeFileSync(path.join(out, 'icon.png'), drawIcon(256));
-fs.writeFileSync(path.join(out, 'tray-idle.png'), drawIcon(22, { transparent: true, pad: 1, bg: [40, 44, 50], fg: [200, 205, 212] }));
-fs.writeFileSync(path.join(out, 'tray-rec.png'), drawIcon(22, { transparent: true, pad: 1, bg: [40, 44, 50], fg: [231, 164, 92] }));
+
+fs.writeFileSync(path.join(out, 'icon.png'), drawAppIcon(256));
+
+// 托盘：32x32、不透明底。COSMIC 的 status area 只认这个规格的 pixmap，
+// 64px 或带透明通道的图标会直接不渲染。
+fs.writeFileSync(path.join(out, 'tray-idle.png'), drawBadge(32, {
+  bg: [150, 156, 164], bg2: [124, 130, 138], fg: [18, 20, 23], radius: 0.22, opaque: true
+}));
+fs.writeFileSync(path.join(out, 'tray-rec.png'), drawBadge(32, {
+  bg: [242, 180, 106], bg2: [224, 148, 68], fg: [26, 15, 4], radius: 0.22, opaque: true
+}));
+
 console.log('icons written to', out);

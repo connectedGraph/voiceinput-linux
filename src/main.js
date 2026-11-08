@@ -140,7 +140,8 @@ function hideOverlaySoon(ms = 1400) {
 
 function trayIcon(recording) {
   const f = path.join(ASSETS, recording ? 'tray-rec.png' : 'tray-idle.png');
-  try { return nativeImage.createFromPath(f).resize({ width: 22, height: 22 }); } catch (_) { return nativeImage.createEmpty(); }
+  // 不要在这里 resize：Linux 托盘交给面板自己缩放，提前缩到 22px 会糊成一团
+  try { return nativeImage.createFromPath(f); } catch (_) { return nativeImage.createEmpty(); }
 }
 
 function updateTray() {
