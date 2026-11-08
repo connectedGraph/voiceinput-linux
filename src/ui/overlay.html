@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<style>
+:root{
+  --tx:#E9EAEC; --tx2:#9BA0A8; --tx3:#6A6F77;
+  --ac:#E7A45C; --ok:#6FC49B; --err:#E4695C;
+  --hud-bg:rgba(17,20,23,.86); --hud-line:rgba(255,255,255,.12);
+  --hud-shadow:0 22px 54px -12px rgba(0,0,0,.9),0 1px 0 rgba(255,255,255,.10) inset;
+  --ease:cubic-bezier(.22,.61,.36,1);
+}
+:root[data-theme="light"]{
+  --tx:#211E1A; --tx2:#5C574F; --tx3:#8B857C;
+  --ac:#B06E24; --ok:#2C8560; --err:#BE4438;
+  --hud-bg:rgba(255,255,255,.88); --hud-line:rgba(24,20,16,.13);
+  --hud-shadow:0 22px 54px -16px rgba(24,20,16,.30),0 1px 0 rgba(255,255,255,.9) inset;
+}
+@media (prefers-color-scheme: light){
+  :root[data-theme="auto"]{
+    --tx:#211E1A; --tx2:#5C574F; --tx3:#8B857C;
+    --ac:#B06E24; --ok:#2C8560; --err:#BE4438;
+    --hud-bg:rgba(255,255,255,.88); --hud-line:rgba(24,20,16,.13);
+    --hud-shadow:0 22px 54px -16px rgba(24,20,16,.30),0 1px 0 rgba(255,255,255,.9) inset;
+  }
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;background:transparent;overflow:hidden;
+  font-family:"Geist","HarmonyOS Sans SC","Alibaba PuHuiTi",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;user-select:none}
+.stage{width:100%;height:100%;display:flex;align-items:center;justify-content:center;padding:8px}
+.hud{
+  width:100%;height:80px;border-radius:19px;display:flex;align-items:center;gap:15px;padding:0 20px;
+  background:var(--hud-bg);
+  backdrop-filter:blur(28px) saturate(160%);
+  -webkit-backdrop-filter:blur(28px) saturate(160%);
+  border:1px solid var(--hud-line);
+  box-shadow:var(--hud-shadow);
+  opacity:0;transform:translateY(10px) scale(.985);transition:.3s var(--ease);
+}
+.hud.show{opacity:1;transform:none}
+.hud.err{border-color:var(--err)}
+.hud.done{border-color:var(--ok)}
+
+.dot{width:7px;height:7px;border-radius:50%;background:var(--ac);flex:0 0 7px;
+  box-shadow:0 0 12px var(--ac);animation:blink 1.4s ease-in-out infinite}
+.hud.settle .dot{animation:none}
+.hud.done .dot{background:var(--ok);box-shadow:0 0 12px var(--ok);animation:none}
+.hud.err .dot{background:var(--err);box-shadow:0 0 12px var(--err);animation:none}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}
+
+.bars{display:flex;align-items:center;gap:2.5px;height:24px;flex:0 0 auto}
+.bars i{width:2.5px;border-radius:2px;background:var(--ac);height:5px;transition:height .2s}
+.hud.rec .bars i{animation:bar 1s ease-in-out infinite}
+.hud.live .bars i{animation:none}
+.bars i:nth-child(1){animation-delay:0s}.bars i:nth-child(2){animation-delay:.13s}
+.bars i:nth-child(3){animation-delay:.26s}.bars i:nth-child(4){animation-delay:.39s}
+.bars i:nth-child(5){animation-delay:.2s}.bars i:nth-child(6){animation-delay:.07s}
+.bars i:nth-child(7){animation-delay:.33s}
+.hud.settle .bars i{height:4px;animation:none;opacity:.5}
+@keyframes bar{0%,100%{height:5px}50%{height:23px}}
+
+.txt{flex:1;min-width:0;font-size:13.5px;color:var(--tx3);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;transition:color .2s}
+.txt.has{color:var(--tx)}
+.time{flex:0 0 auto;font-size:11.5px;color:var(--tx3);
+  font-family:"Geist Mono","Fira Mono",monospace;font-variant-numeric:tabular-nums}
+.ok{flex:0 0 auto;display:flex;align-items:center;gap:6px;color:var(--ok);font-size:11.5px;
+  opacity:0;transition:.3s;max-width:0;overflow:hidden}
+.hud.done .ok{opacity:1;max-width:100px}
+.hud.done .time{display:none}
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="hud" id="hud">
+    <div class="dot"></div>
+    <div class="bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    <div class="txt" id="txt">正在听…</div>
+    <div class="time" id="time">00:00</div>
+    <div class="ok">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg>
+      已输入
+    </div>
+  </div>
+</div>
+<script>
+const hud = document.getElementById('hud');
+const txt = document.getElementById('txt');
+const time = document.getElementById('time');
+const bars = [...document.querySelectorAll('.bars i')];
+let t0 = 0, timer = null, lastPhase = '';
+
+function setClock(ms) {
+  const s = Math.floor(ms / 1000);
+  time.textContent = String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+}
+
+function renderBars(level) {
+  hud.classList.add('live');
+  bars.forEach((b, i) => {
+    const center = 1 - Math.abs(i - 3) / 4;
+    const h = 4 + level * 20 * center * (0.55 + Math.random() * 0.75);
+    b.style.height = Math.max(4, Math.min(23, h)) + 'px';
+  });
+}
+
+window.api.onState((s) => {
+  if (s.theme) document.documentElement.dataset.theme = s.theme;
+
+  const changed = s.phase !== lastPhase;
+  lastPhase = s.phase;
+  if (changed) {
+    hud.className = 'hud';
+    clearInterval(timer);
+  }
+
+  if (s.phase === 'recording') {
+    hud.classList.add('show', 'rec');
+    if (typeof s.level === 'number') renderBars(s.level);
+    if (changed) {
+      txt.className = 'txt';
+      txt.textContent = '正在听…';
+      t0 = Date.now();
+      setClock(0);
+      timer = setInterval(() => setClock(Date.now() - t0), 200);
+    }
+  } else if (s.phase === 'transcribing') {
+    hud.classList.add('show', 'settle');
+    bars.forEach(b => { b.style.height = ''; });
+    setClock(s.durationMs || 0);
+    txt.className = s.text ? 'txt has' : 'txt';
+    txt.textContent = s.text || '识别中…';
+  } else if (s.phase === 'injecting') {
+    hud.classList.add('show', 'settle');
+    txt.className = 'txt has';
+    txt.textContent = s.text || '';
+  } else if (s.phase === 'done') {
+    hud.classList.add('show', 'settle', 'done');
+    txt.className = 'txt has';
+    txt.textContent = s.text || '';
+  } else if (s.phase === 'error') {
+    hud.classList.add('show', 'settle', 'err');
+    txt.className = 'txt has';
+    const e = s.error || '';
+    txt.textContent =
+      e === 'NO_API_KEY' ? '还没填 API Key' :
+      e === 'EMPTY_RESULT' ? '没听清，再来一次' : e.slice(0, 70);
+  } else {
+    hud.className = 'hud';
+    clearInterval(timer);
+  }
+});
+</script>
+</body>
+</html>

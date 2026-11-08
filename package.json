@@ -1,0 +1,16 @@
+{
+  "name": "mimo-asr",
+  "version": "1.0.0",
+  "description": "MiMo-V2.5-ASR 桌面语音输入助手：托盘常驻、按住说话、松手整段注入",
+  "main": "src/main.js",
+  "bin": { "mimo-asr": "bin/mimo-asr.js" },
+  "scripts": {
+    "start": "electron .",
+    "dev": "MICRO_DEBUG=1 electron .",
+    "icons": "node scripts/gen-icons.js"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^35.0.0"
+  }
+}
