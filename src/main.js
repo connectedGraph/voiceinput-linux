@@ -261,6 +261,7 @@ async function stopAndTranscribe() {
     hideOverlaySoon(2600);
   } finally {
     abortCtrl = null;
+    if (config.load().keepMicWarm === false) recorder.shutdown();
   }
 }
 
@@ -321,6 +322,11 @@ function registerIpc() {
   });
   ipcMain.handle('config:save', (_e, patch) => {
     const next = config.save(patch);
+    if (patch.keepMicWarm !== undefined) {
+      recorder.idleShutdownMs = patch.keepMicWarm ? 0 : 120000;
+      if (patch.keepMicWarm) recorder.warmUp(next.audioSource);
+      else recorder.shutdown();
+    }
     if (patch.theme) broadcast({ theme: patch.theme });
     if (patch.hotkey || patch.mode || patch.uiLang) {
       restartHotkey();
@@ -397,7 +403,13 @@ app.whenReady().then(() => {
   buildTray();
   restartHotkey();
   // 预热采集：让第一次按下就没有启动延迟
-  try { recorder.warmUp(config.load().audioSource); } catch (_) {}
+  try {
+    const c0 = config.load();
+    // keepMicWarm=true  -> 0：一直常驻，零延迟
+    // keepMicWarm=false -> 120000：闲置两分钟释放
+    recorder.idleShutdownMs = c0.keepMicWarm === false ? 120000 : 0;
+    recorder.warmUp(c0.audioSource);
+  } catch (_) {}
 
   // 托盘/面板里切换语言时重建菜单
   ipcMain.on('tray:rebuild', () => { if (tray) { tray.destroy(); buildTray(); } });

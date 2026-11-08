@@ -10,7 +10,7 @@ const RATE = 16000;
 const BYTES_PER_SEC = RATE * 2;      // s16le 单声道
 const RING_SECONDS = 5;              // 环形缓冲保留时长
 const PRE_ROLL_SEC = 0.35;           // 按下前回补，避免第一个字被吃掉
-const IDLE_SHUTDOWN_MS = 0;          // >0 时闲置这么久自动关采集；0 = 一直常驻（响应最快）
+const DEFAULT_IDLE_MS = 120000;     // 闲置这么久就释放麦克风；0 = 一直常驻
 
 function wavHeader(dataLen) {
   const blockAlign = 2;
@@ -47,6 +47,7 @@ class Recorder {
   /** @param {{onLevel?:(rms:number,peak:number)=>void}} opts */
   constructor(opts = {}) {
     this.onLevel = opts.onLevel || null;
+    this.idleShutdownMs = opts.idleShutdownMs === undefined ? DEFAULT_IDLE_MS : opts.idleShutdownMs;
     this.proc = null;
     this.source = '';
     this.ring = [];                 // {buf, size}
@@ -95,10 +96,11 @@ class Recorder {
   _touch() {
     this.lastDataAt = Date.now();
     clearTimeout(this.idleTimer);
-    if (IDLE_SHUTDOWN_MS > 0) {
+    const idleMs = this.idleShutdownMs;
+    if (idleMs > 0) {
       this.idleTimer = setTimeout(() => {
-        if (!this.recording && Date.now() - this.lastDataAt > IDLE_SHUTDOWN_MS - 1000) this.shutdown();
-      }, IDLE_SHUTDOWN_MS);
+        if (!this.recording && Date.now() - this.lastDataAt > idleMs - 1000) this.shutdown();
+      }, idleMs);
       this.idleTimer.unref?.();
     }
   }

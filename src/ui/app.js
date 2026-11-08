@@ -58,6 +58,8 @@ const EN = {
   'set.inject.paste': 'Clipboard paste',
   'set.restore': 'Keep clipboard',
   'set.restore.d': 'Restore the previous clipboard content after pasting.',
+  'set.mic': 'Keep microphone warm',
+  'set.mic.d': 'Keeps capture running so nothing is clipped at the start. Off releases the mic after two idle minutes; the next press has to spin it up again.',
   'set.term': 'Terminal paste combo',
   'set.term.d': 'Some terminals need Ctrl+Shift+V.',
   'set.strip': 'Strip trailing punctuation',
@@ -364,6 +366,7 @@ async function loadCfg() {
   setChips('#uilang-chips', cfg.uiLang);
   $('#sw-toggle').classList.toggle('on', cfg.mode === 'toggle');
   $('#sw-restore').classList.toggle('on', !!cfg.restoreClipboard);
+  $('#sw-mic').classList.toggle('on', cfg.keepMicWarm !== false);
   $('#sw-strip').classList.toggle('on', !!cfg.stripTrailingPunct);
   $('#sw-autostart').classList.toggle('on', !!cfg.autostart);
   renderKeys($('#hotkey-keys'), cfg.hotkey);
@@ -449,6 +452,11 @@ $('#sw-restore').onclick = () => {
   const on = !$('#sw-restore').classList.contains('on');
   $('#sw-restore').classList.toggle('on', on);
   patch({ restoreClipboard: on });
+};
+$('#sw-mic').onclick = () => {
+  const on = !$('#sw-mic').classList.contains('on');
+  $('#sw-mic').classList.toggle('on', on);
+  patch({ keepMicWarm: on });
 };
 $('#sw-strip').onclick = () => {
   const on = !$('#sw-strip').classList.contains('on');

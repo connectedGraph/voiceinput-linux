@@ -26,6 +26,7 @@ const DEFAULTS = {
   previewWhileTranscribing: true,
   overlayPosition: 'bottom',      // bottom | top
   theme: 'auto',                  // auto | light | dark
+  keepMicWarm: true,              // 常驻采集：零启动延迟，代价是麦克风常亮
   audioSource: '',                // 空 = 系统默认输入
   autostart: false,
   history: []
