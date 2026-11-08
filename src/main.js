@@ -12,6 +12,13 @@ const { HotkeyWatcher } = require('./evdev');
 // 单实例
 app.setName('MiMo ASR');
 
+// 悬浮窗是 focusable:false 的非激活窗口，Chromium 会把它当后台页面节流：
+// JS 收到 state 也改了 DOM，但不产生新帧，屏幕上停在旧内容。
+// webPreferences.backgroundThrottling 只覆盖一部分，这三项更彻底。
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+
 if (!app.requestSingleInstanceLock()) {
   app.quit();
   process.exit(0);
@@ -43,17 +50,23 @@ const ASSETS = path.join(__dirname, '..', 'assets');
 
 function pushOnly(patch) {
   state = { ...state, ...patch };
+  sendState();
+}
+
+function sendState() {
   for (const w of [mainWin, overlayWin]) {
     if (w && !w.isDestroyed()) w.webContents.send('state', state);
+  }
+  // 非激活的透明窗口有时不发新帧，显式请求重绘
+  if (overlayWin && !overlayWin.isDestroyed() && state.phase !== 'idle') {
+    try { overlayWin.webContents.invalidate(); } catch (_) {}
   }
 }
 
 function broadcast(patch) {
   const prevPhase = state.phase;
   state = { ...state, ...patch };
-  for (const w of [mainWin, overlayWin]) {
-    if (w && !w.isDestroyed()) w.webContents.send('state', state);
-  }
+  sendState();
   if (state.phase !== prevPhase) updateTray();
 }
 
