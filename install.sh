@@ -55,7 +55,9 @@ cat > "$HOME/.local/share/applications/$APP_ID.desktop" <<DESK
 Type=Application
 Name=MiMo ASR
 Comment=语音输入助手
-Exec=$DIR/node_modules/.bin/electron $DIR --no-sandbox
+# 直接用 dist 里的 ELF 二进制：.bin/electron 是 #!/usr/bin/env node 脚本，
+# 从桌面启动时 PATH 里没有 nvm 的 node，会静默失败
+Exec=$DIR/node_modules/electron/dist/electron $DIR --no-sandbox
 Icon=$DIR/assets/icon.png
 Terminal=false
 Categories=Utility;AudioVideo;
