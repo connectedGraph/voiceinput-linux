@@ -32,7 +32,7 @@
     <button class="wbtn nid" id="btn-min" title="最小化">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg>
     </button>
-    <button class="wbtn close nid" id="btn-close" title="隐藏到托盘">
+    <button class="wbtn close nid" id="btn-close" title="隐藏到后台">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
     </button>
   </div>
@@ -200,8 +200,12 @@
               </div>
             </div>
             <div class="row">
-              <div class="k"><b data-i18n="set.autostart">开机自启</b><span data-i18n="set.autostart.d">登录后自动驻留托盘。</span></div>
+              <div class="k"><b data-i18n="set.autostart">开机自启</b><span data-i18n="set.autostart.d">登录后在后台常驻，不弹面板。</span></div>
               <div class="v"><div class="sw" id="sw-autostart"></div></div>
+            </div>
+            <div class="row">
+              <div class="k"><b data-i18n="set.background">后台运行</b><span data-i18n="set.background.d">点右上角叉叉只是退到后台，快捷键和托盘继续可用；重开应用或点托盘图标回到面板。</span></div>
+              <div class="v"><button class="btn ghost" id="btn-quit" data-i18n="set.quit">退出 MiMo ASR</button></div>
             </div>
           </div>
         </div>

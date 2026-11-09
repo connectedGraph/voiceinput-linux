@@ -87,7 +87,10 @@ const EN = {
   'set.hotkey.d': 'Hold the combo to record.',
   'set.bind': 'Rebind',
   'set.autostart': 'Start on login',
-  'set.autostart.d': 'Stay in the tray after login.',
+  'set.autostart.d': 'Start in the background at login, without opening the panel.',
+  'set.background': 'Background mode',
+  'set.background.d': 'The close button only hides the panel; hotkey and tray keep working. Reopen the app or click the tray icon to get it back.',
+  'set.quit': 'Quit MiMo ASR',
   'set.output': 'Output',
   'set.inject': 'Injection',
   'set.inject.d': 'Commit through the input method. On a reported failure, copy the result for manual paste.',
@@ -521,6 +524,7 @@ $('#btn-eye').onclick = () => {
 };
 $('#btn-min').onclick = () => bridge.minimize();
 $('#btn-close').onclick = () => bridge.hide();
+$('#btn-quit').onclick = () => bridge.quit();
 $('#btn-cfgdir').onclick = () => bridge.openConfigDir();
 $('#clear-history').onclick = async () => { await bridge.resetHistory(); cfg = await bridge.getConfig(); renderHistory(); };
 

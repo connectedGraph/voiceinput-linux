@@ -35,6 +35,11 @@ let overlay = null;
 let tray = null;
 let watcher = null;
 let lastLevelAt = 0;
+// --hidden：登录自启时只在后台跑（托盘 + 热键 + 悬浮窗），不弹面板。
+// 普通启动（应用菜单、命令行）默认打开面板。
+const START_HIDDEN = process.argv.includes('--hidden') || process.argv.includes('--background');
+const AUTOSTART_DIR = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'autostart');
+const AUTOSTART_FILE = path.join(AUTOSTART_DIR, 'mimo-asr.desktop');
 const recorder = new Recorder({
   onLevel: (rms) => {
     const now = Date.now();
@@ -118,25 +123,62 @@ function createMainWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      // 只在前台可见时需要持续出帧；隐藏后交给 Chromium 节流，彻底后台化。
       backgroundThrottling: false
     }
   });
   mainWin.loadFile(path.join(__dirname, 'ui', 'index.html'));
 
   const reveal = () => {
-    if (!mainWin || mainWin.isDestroyed()) return;
-    if (!mainWin.isVisible()) mainWin.show();
-    mainWin.focus();
+    if (START_HIDDEN) return;
+    showMainWindow();
   };
   mainWin.once('ready-to-show', reveal);
   mainWin.webContents.once('did-finish-load', reveal);
   // 无边框窗口上 ready-to-show 不保证触发，兜底 2 秒后强制显示
-  setTimeout(reveal, 2000);
+  if (!START_HIDDEN) setTimeout(reveal, 2000);
   mainWin.on('close', (e) => {
-    // 托盘图标在部分桌面环境下不可见，隐藏窗口会让人找不回来，所以缩到任务栏
-    if (!app.isQuitting) { e.preventDefault(); mainWin.minimize(); }
+    // 叉叉 = 退到后台，进程、托盘、热键都还在；再点托盘或重开应用就回来。
+    if (!app.isQuitting) { e.preventDefault(); hideMainWindow(); }
   });
   mainWin.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
+}
+
+function showMainWindow() {
+  if (!mainWin || mainWin.isDestroyed()) return null;
+  try { mainWin.webContents.setBackgroundThrottling(false); } catch (_) {}
+  if (mainWin.isMinimized()) mainWin.restore();
+  mainWin.show();
+  mainWin.focus();
+  mainWin.moveTop();
+  return mainWin;
+}
+
+function hideMainWindow() {
+  if (!mainWin || mainWin.isDestroyed()) return;
+  mainWin.hide();
+  // 隐藏后允许节流，面板不再占用渲染资源。
+  try { mainWin.webContents.setBackgroundThrottling(true); } catch (_) {}
+}
+
+function syncAutostart(enabled) {
+  try {
+    if (!enabled) {
+      fs.rmSync(AUTOSTART_FILE, { force: true });
+      return;
+    }
+    fs.mkdirSync(AUTOSTART_DIR, { recursive: true });
+    const exec = `"${process.execPath}" "${app.getAppPath()}" --no-sandbox --hidden`;
+    const body = [
+      '[Desktop Entry]', 'Type=Application', 'Name=MiMo ASR',
+      'Comment=语音输入助手（后台常驻）', `Exec=${exec}`,
+      `Icon=${path.join(ASSETS, 'icon.png')}`, 'Terminal=false',
+      'X-GNOME-Autostart-enabled=true', 'StartupWMClass=MiMo ASR', ''
+    ].join('\n');
+    fs.writeFileSync(AUTOSTART_FILE, body, { mode: 0o644 });
+  } catch (err) {
+    console.error('[autostart]', err.message);
+  }
 }
 
 function createOverlay() {
@@ -171,11 +213,12 @@ function buildTray() {
   const cfg = config.load();
   const zh = cfg.uiLang !== 'en';
   const menu = Menu.buildFromTemplate([
-    { label: zh ? '打开面板' : 'Open panel', click: () => { mainWin.show(); mainWin.focus(); } },
+    { label: zh ? '打开面板' : 'Open panel', click: () => showMainWindow() },
+    { label: zh ? '隐藏到后台' : 'Hide to background', click: () => hideMainWindow() },
     { type: 'separator' },
     { label: state.phase === 'recording' ? (zh ? '结束录音' : 'Stop') : (zh ? '开始录音' : 'Start recording'), click: () => toggleManual() },
-    { label: zh ? '尝试页' : 'Playground', click: () => { mainWin.show(); mainWin.webContents.send('goto', 'lab'); } },
-    { label: zh ? '剪贴板' : 'Clipboard', click: () => { mainWin.show(); mainWin.focus(); mainWin.webContents.send('goto', 'clipboard'); } },
+    { label: zh ? '尝试页' : 'Playground', click: () => { showMainWindow(); mainWin.webContents.send('goto', 'lab'); } },
+    { label: zh ? '剪贴板' : 'Clipboard', click: () => { showMainWindow(); mainWin.webContents.send('goto', 'clipboard'); } },
     { label: zh ? '复制最近识别结果' : 'Copy latest transcription', click: () => {
       const text = state.text || config.load().history[0]?.text;
       if (text) clipboardStore.copyText(text);
@@ -186,7 +229,7 @@ function buildTray() {
   // Linux 上 setTitle 通常无效，但 SNI 的 Title 为空时 COSMIC 面板不渲染该条目
   try { tray.setTitle('MiMo ASR'); } catch (_) {}
   tray.setContextMenu(menu);
-  tray.on('click', () => { mainWin.show(); mainWin.focus(); });
+  tray.on('click', () => showMainWindow());
   updateTray();
 }
 
@@ -196,7 +239,7 @@ function requireKey() {
   const cfg = config.load();
   if (!cfg.apiKey) {
     broadcast({ phase: 'error', error: 'NO_API_KEY', hint: 'config' });
-    if (mainWin && !mainWin.isDestroyed()) { mainWin.show(); mainWin.focus(); }
+    if (mainWin && !mainWin.isDestroyed()) { showMainWindow(); }
     return null;
   }
   return cfg;
@@ -382,6 +425,7 @@ function registerIpc() {
       else if (state.phase !== 'recording') recorder.shutdown();
     }
     if (patch.theme) broadcast({ theme: patch.theme });
+    if (patch.autostart !== undefined) syncAutostart(next.autostart === true);
     if (patch.hotkey || patch.mode || patch.uiLang) {
       restartHotkey();
       if (tray) { tray.destroy(); buildTray(); }
@@ -435,8 +479,9 @@ function registerIpc() {
     });
   });
 
-  ipcMain.handle('win:minimize', () => mainWin.minimize());
-  ipcMain.handle('win:hide', () => mainWin.minimize());
+  ipcMain.handle('win:minimize', () => { if (mainWin && !mainWin.isDestroyed()) mainWin.minimize(); });
+  ipcMain.handle('win:hide', () => hideMainWindow());
+  ipcMain.handle('win:show', () => { showMainWindow(); });
   ipcMain.handle('app:quit', () => { app.isQuitting = true; app.quit(); });
   ipcMain.handle('app:open-config-dir', () => shell.openPath(config.CONFIG_DIR));
   ipcMain.handle('env:check', () => ({
@@ -449,11 +494,7 @@ function registerIpc() {
 /* ---------------- 启动 ---------------- */
 
 function revealMainWindow() {
-  if (!mainWin || mainWin.isDestroyed()) return;
-  if (mainWin.isMinimized()) mainWin.restore();
-  mainWin.show();
-  mainWin.focus();
-  mainWin.moveTop();
+  showMainWindow();
 }
 
 app.on('second-instance', revealMainWindow);
@@ -467,6 +508,8 @@ app.whenReady().then(() => {
   registerIpc();
   buildTray();
   restartHotkey();
+  // 把配置里的开机自启同步到 autostart desktop（带 --hidden，登录后只在后台）
+  try { syncAutostart(config.load().autostart === true); } catch (_) {}
   // 预热采集：让第一次按下就没有启动延迟
   try {
     const c0 = config.load();

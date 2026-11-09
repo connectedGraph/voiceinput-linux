@@ -114,6 +114,15 @@ X11 下窗口深度是 32（ARGB），透明和圆角都正常。
 
 ## 面板
 
+面板是“可关闭的窗口”，不是进程的生命周期。主进程常驻，关窗口只影响界面：
+
+- 右上角叉叉 → `hide()`，不是 `minimize()`。窗口从任务栏/窗口列表里消失，托盘、录音热键、
+  悬浮窗全部继续工作；隐藏后对渲染进程开启 `backgroundThrottling`，不再占渲染资源。
+- 重新打开应用（单实例 `second-instance`）、左键托盘、托盘菜单“打开面板”都走 `showMainWindow()`。
+- 真正退出只能用托盘菜单或设置里的“退出 MiMo ASR”（`app.isQuitting = true`）。
+- **开机自启**会在 `~/.config/autostart/mimo-asr.desktop` 写一条带 `--hidden` 的启动项，
+  登录后只驻留后台；手动打开应用不带该参数，默认显示面板。
+
 无边框窗口，标题栏用 `-webkit-app-region: drag` 拖动。COSMIC 下无边框窗口没有原生边缘拖拽，所以自己在四边和四角放了 8 个 5px 的透明手柄，`pointerdown` 时取当前 bounds，`pointermove` 里算新 bounds 发给主进程，用 `requestAnimationFrame` 节流。
 
 关键点是**在渲染进程里算**，不要在主进程里轮询 `screen.getCursorScreenPoint()`——那样依赖真实光标位置，任何非真实鼠标的输入（自动化、远程）都会失效。
