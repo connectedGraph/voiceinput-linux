@@ -5,7 +5,7 @@ const path = require('path');
 const os = require('os');
 
 const APP = 'mimo-asr';
-const CONFIG_DIR = path.join(os.homedir(), '.config', APP);
+const CONFIG_DIR = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), APP);
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 // 写入永远落到配置目录，绝不写进项目目录（项目会被开源）
 const ENV_FILE = path.join(CONFIG_DIR, '.env');
@@ -20,8 +20,7 @@ const DEFAULTS = {
   uiLang: 'zh',                   // zh | en
   mode: 'hold',                   // hold | toggle
   hotkey: ['Ctrl', 'Super'],      // 逻辑键名数组，支持纯修饰键组合
-  injectMethod: 'type',           // type(直接键入，非 ASCII 自动回落粘贴) | paste
-  restoreClipboard: true,
+  injectMethod: 'fcitx',          // fcitx (one commit, clipboard untouched) | preview
   stripTrailingPunct: false,
   previewWhileTranscribing: true,
   overlayPosition: 'bottom',      // bottom | top
@@ -58,8 +57,10 @@ function readConfigFile() {
 
 function normalize(cfg) {
   const hotkey = Array.isArray(cfg.hotkey) && cfg.hotkey.length ? cfg.hotkey : DEFAULTS.hotkey;
+  const { restoreClipboard, pasteKey, ...current } = cfg; // Migrate retired clipboard injection settings.
   return {
-    ...cfg,
+    ...current,
+    injectMethod: cfg.injectMethod === 'preview' ? 'preview' : 'fcitx',
     hotkey,
     history: Array.isArray(cfg.history) ? cfg.history.slice(0, 50) : []
   };

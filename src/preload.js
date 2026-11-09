@@ -2,7 +2,13 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
+  clipboardList: () => ipcRenderer.invoke('clipboard:list'),
+  clipboardCopy: (id, mode) => ipcRenderer.invoke('clipboard:copy', id, mode),
+  copyText: (text) => ipcRenderer.invoke('clipboard:text', text),
+  clipboardImport: () => ipcRenderer.invoke('clipboard:import'),
+  clipboardClear: () => ipcRenderer.invoke('clipboard:clear'),
   getConfig: () => ipcRenderer.invoke('config:get'),
+  getState: () => ipcRenderer.invoke('state:get'),
   saveConfig: (patch) => ipcRenderer.invoke('config:save', patch),
   resetHistory: () => ipcRenderer.invoke('config:reset-history'),
   testConnection: () => ipcRenderer.invoke('asr:test'),

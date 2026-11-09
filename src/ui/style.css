@@ -292,3 +292,8 @@ h1{font-size:19px;font-weight:550;letter-spacing:-.01em}
 .rz-ne{top:0;right:0;width:12px;height:12px;cursor:ne-resize}
 .rz-sw{bottom:0;left:0;width:12px;height:12px;cursor:sw-resize}
 .rz-se{bottom:0;right:0;width:12px;height:12px;cursor:se-resize}
+.clip-card{display:flex;gap:16px;padding:16px 0;border-bottom:1px solid var(--line)}
+.clip-card img{width:150px;height:110px;object-fit:contain;border-radius:8px;background:var(--inp-bg)}
+.clip-content{min-width:0;flex:1}
+.clip-content pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:140px;overflow:auto;font:inherit;user-select:text}
+.clip-content small{display:block;overflow-wrap:anywhere;color:var(--tx3);user-select:text}

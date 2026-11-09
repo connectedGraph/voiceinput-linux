@@ -1,0 +1,37 @@
+'use strict';
+// Run with xvfb-run: the user's desktop clipboard is never touched.
+const { app, clipboard, nativeImage, BrowserWindow, dialog } = require('electron');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const dir = fs.mkdtempSync('/data/scratch/mimo-clipboard-test-');
+process.env.XDG_CONFIG_HOME = dir;
+app.setPath('userData', path.join(dir, 'electron'));
+app.whenReady().then(async () => {
+  const { ClipboardStore } = require('../src/clipboard');
+  const store = new ClipboardStore();
+  store.copyText('失败回退中文');
+  assert.equal(clipboard.readText(), '失败回退中文');
+  const source = path.join(__dirname, '..', 'assets', 'icon.png');
+  dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [source] });
+  const window = new BrowserWindow({ show: false });
+  await store.importImage(window);
+  assert.equal(clipboard.readText(), '失败回退中文', 'importing must let the user choose image or path before replacing clipboard');
+  const item = store.list()[0];
+  assert.equal(item.path, source);
+  assert.ok(item.thumbnail.startsWith('data:image/png;'));
+  store.copy(item.id, 'path');
+  assert.equal(clipboard.readText(), source);
+  store.copy(item.id, 'image');
+  assert.equal(clipboard.readImage().toPNG().equals(nativeImage.createFromPath(source).toPNG()), true);
+  const reloaded = new ClipboardStore();
+  assert.equal(reloaded.list().find(x => x.id === item.id).path, source, 'copying image after path must retain original path');
+  const imagePath = path.join(store.dir, item.image);
+  assert.ok(fs.existsSync(imagePath));
+  store.clear();
+  store.capture();
+  assert.equal(store.list().length, 0, 'clearing history must not immediately re-add current clipboard');
+  assert.equal(fs.existsSync(imagePath), false);
+  console.log('PASS: Unicode fallback, image bytes, original path, persistence and clear; isolated X clipboard');
+  window.destroy(); app.quit();
+}).catch(e => { console.error(e); app.exit(1); });

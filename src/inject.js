@@ -1,68 +1,59 @@
 'use strict';
-// 文字注入：整段一次性写入，不做逐字模拟
-const { spawnSync, spawn } = require('child_process');
+// One input-method commit for the whole result. No clipboard writes or synthetic keys.
+const { spawn, spawnSync } = require('child_process');
+const path = require('path');
 const fs = require('fs');
+const CLIENT = path.join(__dirname, '..', 'build', 'bridge-client');
 
-function has(cmd) {
-  return spawnSync('sh', ['-c', `command -v ${cmd}`], { encoding: 'utf8' }).status === 0;
-}
-
-function readClipboard() {
-  const r = spawnSync('wl-paste', ['--no-newline'], { encoding: 'utf8', timeout: 1500 });
-  return r.status === 0 ? r.stdout : null;
-}
-
-function writeClipboard(text) {
-  // wl-copy 会 fork 常驻持有剪贴板，必须 detached + unref
-  return new Promise((resolve, reject) => {
-    const p = spawn('wl-copy', [], { stdio: ['pipe', 'ignore', 'ignore'], detached: true });
-    p.on('error', reject);
-    p.stdin.end(text, () => { try { p.unref(); } catch (_) {} resolve(); });
+function has(command) {
+  return (process.env.PATH || '').split(path.delimiter).some(dir => {
+    try { fs.accessSync(path.join(dir, command), fs.constants.X_OK); return true; }
+    catch (_) { return false; }
   });
 }
 
-/** 用 ydotool 发一个按键组合，例如 ['ctrl','v'] -> ydotool key ctrl+v */
-function keyCombo(keys) {
-  const r = spawnSync('ydotool', ['key', keys.join('+')], { timeout: 5000, encoding: 'utf8' });
-  if (r.status !== 0) console.error('[inject] ydotool key 失败:', r.stderr || r.status);
-  return r.status === 0;
+function call(method, token, text = '') {
+  return new Promise((resolve, reject) => {
+    const child = spawn(CLIENT, token === undefined ? [method] : [method, token],
+      { stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '', stderr = '';
+    const timer = setTimeout(() => child.kill(), 3500);
+    child.stdout.on('data', b => { stdout += b; });
+    child.stderr.on('data', b => { stderr += b; });
+    child.stdin.on('error', () => {});
+    child.on('error', () => { clearTimeout(timer); reject(new Error('INPUT_BRIDGE_UNAVAILABLE')); });
+    child.on('close', code => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        console.error('[inject] bridge:', stderr.trim() || code);
+        reject(new Error('INPUT_BRIDGE_UNAVAILABLE'));
+      } else resolve(stdout.trim());
+    });
+    child.stdin.end(text);
+  });
 }
 
-function typeDirect(text) {
-  const r = spawnSync('ydotool', ['type', '--', text], { timeout: 15000, encoding: 'utf8' });
-  return r.status === 0;
+async function captureTarget() {
+  const token = await call('Capture');
+  if (!token) throw new Error('NO_INPUT_FOCUS');
+  return token;
 }
 
-/**
- * 注入一段文字到当前焦点输入框。
- * method: 'paste'（剪贴板+Ctrl+V，中文稳）| 'type'（ydotool 直敲，仅 ASCII 稳）
- * pasteKey: 'ctrl+v' | 'ctrl+shift+v'（部分终端需要后者）
- */
-async function inject(text, opts = {}) {
-  const method = opts.method || 'paste';
-  const restore = !!opts.restoreClipboard;
-  const pasteKey = opts.pasteKey || 'ctrl+v';
-
-  if (!text) return { ok: false, reason: 'empty' };
-
-  if (method === 'type' && /^[\x20-\x7e\s]*$/.test(text) && has('ydotool')) {
-    const ok = typeDirect(text);
-    if (ok) return { ok: true, method: 'type' };
+async function inject(text, { target } = {}) {
+  if (!text) return { ok: false, reason: 'EMPTY_RESULT' };
+  if (!target) return { ok: false, reason: 'NO_INPUT_FOCUS' };
+  try {
+    const reply = await call('Commit', target, text);
+    return reply === 'OK' ? { ok: true, method: 'fcitx' } : { ok: false, reason: reply };
+  } catch (error) {
+    // A timeout can follow a delivered commit; retrying risks duplicate text.
+    return { ok: false, reason: error.message };
   }
-
-  if (!has('wl-copy') || !has('ydotool')) {
-    return { ok: false, reason: 'missing-tools' };
-  }
-
-  const previous = restore ? readClipboard() : null;
-  await writeClipboard(text);
-  await new Promise(r => setTimeout(r, 90));     // 等剪贴板落地
-  const keys = pasteKey === 'ctrl+shift+v' ? ['ctrl', 'shift', 'v'] : ['ctrl', 'v'];
-  keyCombo(keys);
-  if (restore && previous !== null && previous !== text) {
-    setTimeout(() => { writeClipboard(previous).catch(() => {}); }, 260);
-  }
-  return { ok: true, method: 'paste' };
 }
 
-module.exports = { inject, has, readClipboard, writeClipboard };
+function bridgeReady() {
+  const result = spawnSync(CLIENT, ['Version'], { encoding: 'utf8', timeout: 3000 });
+  return result.status === 0 && result.stdout.trim() === '1';
+}
+
+module.exports = { inject, has, captureTarget, bridgeReady };

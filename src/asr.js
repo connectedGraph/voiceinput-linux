@@ -3,6 +3,8 @@
 const fs = require('fs');
 
 const MAX_BASE64 = 10 * 1024 * 1024; // 官方上限
+const DEBUG = process.env.MIMO_DEBUG === '1' || process.env.MIMO_ASR_DEBUG === '1';
+function debug(...args) { if (DEBUG) console.error('[asr]', ...args); }
 
 function buildBody({ model, base64, mime, language }) {
   return {
@@ -44,6 +46,7 @@ async function transcribe(cfg, audioPath, hooks = {}) {
 
   const url = `${cfg.baseUrl.replace(/\/+$/, '')}/chat/completions`;
   const started = Date.now();
+  debug('request', { url, model: cfg.model, bytes: buf.length, base64Bytes: base64.length, language: cfg.language || 'auto' });
 
   const ctrl = new AbortController();
   if (hooks.signal) {
@@ -75,6 +78,22 @@ async function transcribe(cfg, audioPath, hooks = {}) {
     throw new Error(`HTTP ${res.status}${detail ? ' · ' + detail : ''}`);
   }
 
+  debug('response', { status: res.status, contentType: res.headers.get('content-type') || '' });
+
+  const contentType = (res.headers.get('content-type') || '').toLowerCase();
+  if (contentType.includes('application/json')) {
+    try {
+    const raw = await res.text();
+    debug('non-stream response', raw.slice(0, 500));
+    let obj;
+    try { obj = JSON.parse(raw); } catch (_) { throw new Error('接口返回不是有效 SSE 或 JSON'); }
+    if (obj.error) throw new Error(obj.error.message || JSON.stringify(obj.error));
+    const piece = pickDelta(obj) || (typeof obj.text === 'string' ? obj.text : '');
+    if (piece) hooks.onDelta?.(piece, piece);
+    return { text: piece.trim(), frames: piece ? 1 : 0, latencyMs: Date.now() - started };
+    } finally { clearTimeout(timer); }
+  }
+
   let full = '';
   let frames = 0;
 
@@ -82,38 +101,54 @@ async function transcribe(cfg, audioPath, hooks = {}) {
   const dec = new TextDecoder();
   let bufText = '';
 
+  const consume = (line) => {
+    const trimmed = line.trim();
+    if (!trimmed || !trimmed.startsWith('data:')) return false;
+    const payload = trimmed.slice(5).trim();
+    if (!payload || payload === '[DONE]') return false;
+    frames++;
+    let obj;
+    try { obj = JSON.parse(payload); } catch (err) {
+      debug('invalid SSE JSON', { frame: frames, payload: payload.slice(0, 240), error: err.message });
+      return false;
+    }
+    if (obj.error) throw new Error(obj.error.message || JSON.stringify(obj.error));
+    const piece = pickDelta(obj);
+    debug('frame', { frame: frames, keys: Object.keys(obj), piece: piece.slice(0, 120) });
+    if (piece) {
+      full += piece;
+      hooks.onDelta?.(piece, full);
+    }
+    return true;
+  };
+
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        bufText += dec.decode();
+        break;
+      }
       bufText += dec.decode(value, { stream: true });
 
       let idx;
       while ((idx = bufText.indexOf('\n')) >= 0) {
-        const line = bufText.slice(0, idx).trim();
+        const line = bufText.slice(0, idx);
         bufText = bufText.slice(idx + 1);
-        if (!line || !line.startsWith('data:')) continue;
-        const payload = line.slice(5).trim();
-        if (!payload || payload === '[DONE]') continue;
-        frames++;
-        let obj;
-        try { obj = JSON.parse(payload); } catch (_) { continue; }
-        if (obj.error) throw new Error(obj.error.message || JSON.stringify(obj.error));
-        const piece = pickDelta(obj);
-        if (piece) {
-          full += piece;
-          hooks.onDelta?.(piece, full);
-        }
+        consume(line);
       }
     }
+    if (bufText.trim()) consume(bufText);
   } finally {
     clearTimeout(timer);
   }
 
-  return { text: full.trim(), frames, latencyMs: Date.now() - started };
+  const text = full.trim();
+  debug('complete', { frames, chars: text.length, latencyMs: Date.now() - started, text: text.slice(0, 200) });
+  return { text, frames, latencyMs: Date.now() - started };
 }
 
-/** 非流式，用于"测试连接"：发一个极短的静音 wav */
+/** 用于“测试连接”：仍走真实的 chat/completions + SSE 消费链路，只上传极短静音 wav。 */
 async function ping(cfg) {
   const fs2 = require('fs');
   const os = require('os');
@@ -131,4 +166,4 @@ async function ping(cfg) {
   }
 }
 
-module.exports = { transcribe, ping, MAX_BASE64 };
+module.exports = { transcribe, ping, MAX_BASE64, buildBody, pickDelta };

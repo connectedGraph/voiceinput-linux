@@ -3,6 +3,42 @@ const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 const bridge = window.api;
 
+async function refreshClipboard() {
+  try {
+    const items = await bridge.clipboardList();
+    const list = $('#clip-list');
+    list.replaceChildren();
+    if (!items.length) list.textContent = '还没有记录。复制文字、截图，或选择一张图片。';
+    for (const item of items) {
+      const card = document.createElement('div'); card.className = 'clip-card';
+      if (item.thumbnail) { const img = document.createElement('img'); img.src = item.thumbnail; card.append(img); }
+      const content = document.createElement('div'); content.className = 'clip-content';
+      const text = document.createElement('pre'); text.textContent = item.text || '图片'; content.append(text);
+      if (item.path) { const p = document.createElement('small'); p.textContent = item.path; content.append(p); }
+      const actions = document.createElement('div'); actions.className = 'labbar';
+      const choices = [];
+      if (item.text) choices.push(['text', '复制文字']);
+      if (item.image) choices.push(['image', '复制图片']);
+      if (item.path) choices.push(['path', '复制路径']);
+      for (const [mode, label] of choices) {
+        const button = document.createElement('button'); button.className = 'btn'; button.textContent = label;
+        button.onclick = async () => {
+          try { await bridge.clipboardCopy(item.id, mode); $('#clip-status').textContent = `已${label}`; }
+          catch (e) { $('#clip-status').textContent = e.message; }
+        };
+        actions.append(button);
+      }
+      content.append(actions); card.append(content); list.append(card);
+    }
+  } catch (e) { $('#clip-status').textContent = e.message; }
+}
+$('#clip-refresh').onclick = refreshClipboard;
+$('#clip-import').onclick = async () => {
+  try { await bridge.clipboardImport(); await refreshClipboard(); }
+  catch (e) { $('#clip-status').textContent = e.message; }
+};
+$('#clip-clear').onclick = async () => { await bridge.clipboardClear(); await refreshClipboard(); };
+
 let cfg = null;
 let state = { phase: 'idle', text: '', durationMs: 0, error: '' };
 
@@ -54,14 +90,11 @@ const EN = {
   'set.autostart.d': 'Stay in the tray after login.',
   'set.output': 'Output',
   'set.inject': 'Injection',
-  'set.inject.d': 'The whole text is written at once, never simulated keystroke by keystroke.',
-  'set.inject.paste': 'Clipboard paste',
-  'set.restore': 'Keep clipboard',
-  'set.restore.d': 'Restore the previous clipboard content after pasting.',
+  'set.inject.d': 'Commit through the input method. On a reported failure, copy the result for manual paste.',
+  'set.inject.fcitx': 'Input method',
+  'set.inject.preview': 'Transcribe only',
   'set.mic': 'Keep microphone warm',
-  'set.mic.d': 'Keeps capture running so nothing is clipped at the start. Off releases the mic after two idle minutes; the next press has to spin it up again.',
-  'set.term': 'Terminal paste combo',
-  'set.term.d': 'Some terminals need Ctrl+Shift+V.',
+  'set.mic.d': 'Keeps capture running to preserve the start. Off releases the mic after recording; the next start takes longer.',
   'set.strip': 'Strip trailing punctuation',
   'set.strip.d': 'Handy for shell or code input.',
   'set.look': 'Appearance',
@@ -78,7 +111,7 @@ const EN = {
 const STATUS = {
   zh: {
     idle: '就绪', listening: '后台监听中', recording: '正在录音',
-    transcribing: '识别中', injecting: '正在输入', done: '已输入', error: '出错了',
+    transcribing: '识别中', injecting: '正在提交', done: '已提交给输入法', error: '出错了',
     recHint: '松手结束', toggleHint: '再按一次结束',
     wait: '等待输入', recog: '识别中…', injected: '已注入', failed: '失败',
     noKey: '还没填 API Key', noKeySub: '到设置里填一个就能用了',
@@ -88,7 +121,7 @@ const STATUS = {
   },
   en: {
     idle: 'Ready', listening: 'Listening in background', recording: 'Recording',
-    transcribing: 'Transcribing', injecting: 'Inserting', done: 'Inserted', error: 'Error',
+    transcribing: 'Transcribing', injecting: 'Committing', done: 'Submitted to input method', error: 'Error',
     recHint: 'Release to finish', toggleHint: 'Press again to stop',
     wait: 'Waiting', recog: 'Transcribing…', injected: 'Inserted', failed: 'Failed',
     noKey: 'No API key yet', noKeySub: 'Add one in Settings to get started',
@@ -141,6 +174,7 @@ const PHASE_LABEL = {
 let lastPhase = '';
 function renderState(s, force) {
   if (!s) return;
+  state = s;
   const phaseChanged = s.phase !== lastPhase;
   lastPhase = s.phase;
   // 录音期间只有电平在跳，走轻量路径，别每次都重建整页
@@ -203,10 +237,10 @@ function renderState(s, force) {
     case 'done':
       resetWave(); renderPeak(s.peak);
       $('#btn-replay').disabled = false;
-      label = T('done');
+      label = s.previewOnly ? (lang === 'en' ? 'Transcribed' : '转写完成') : T('done');
       sub = s.text ? s.text.slice(0, 60) : '';
       orb.classList.add('live');
-      outstat.textContent = T('injected'); outstat.style.color = 'var(--ok)';
+      outstat.textContent = label; outstat.style.color = 'var(--ok)';
       if (s.text) { outtxt.classList.remove('ph'); outText = s.text; }
       mic.classList.remove('rec'); wave.classList.remove('on'); mw.classList.remove('rec');
       hint.textContent = T('micHint');
@@ -220,7 +254,9 @@ function renderState(s, force) {
       if (e === 'NO_API_KEY') { label = T('noKey'); sub = T('noKeySub'); }
       else if (e === 'EMPTY_RESULT') { sub = T('empty'); }
       else if (e === 'NO_DEVICE' || e === 'PERMISSION') { label = T('noPerm'); sub = e; }
-      else sub = e.slice(0, 90);
+      else sub = inputError(e);
+      if (s.copiedFallback) sub = lang === 'en' ? 'Insertion failed. Copied to clipboard; paste manually.' : '未能注入，已自动复制到剪贴板，请手动粘贴。';
+      if (s.text) { outtxt.classList.remove('ph'); outText = s.text; }
       outstat.textContent = T('failed'); outstat.style.color = 'var(--err)';
       mic.classList.remove('rec'); wave.classList.remove('on'); mw.classList.remove('rec');
       hint.textContent = T('micHint');
@@ -245,6 +281,16 @@ function renderState(s, force) {
     const typing = s.phase === 'transcribing';
     outtxt.innerHTML = escapeHtml(outText) + (typing ? '<span class="cur"></span>' : '');
   }
+  if (s.latencyMs) $('#m-lat').textContent = `${s.latencyMs} ms`;
+}
+
+function inputError(code) {
+  const messages = {
+    INPUT_BRIDGE_UNAVAILABLE: ['输入法桥接未运行，请重新执行安装脚本。结果已保留。', 'Input bridge unavailable. Run install.sh again. The result is saved.'],
+    NO_INPUT_FOCUS: ['请先点入支持输入法的文本框。结果已保留，可复制。', 'Focus a text field with input-method support. The result is saved.'],
+    FOCUS_CHANGED: ['输入焦点已改变，结果已保留，可复制。', 'Focus changed. The result is saved and can be copied.']
+  };
+  return messages[code] ? messages[code][lang === 'en' ? 1 : 0] : code.slice(0, 90);
 }
 
 /* 真实电平驱动波形 */
@@ -333,7 +379,7 @@ function renderHistory() {
     </div>`;
   }).join('');
   list.querySelectorAll('[data-copy]').forEach(b => {
-    b.onclick = () => { navigator.clipboard.writeText(decodeURIComponent(b.dataset.copy)); };
+    b.onclick = () => { bridge.copyText(decodeURIComponent(b.dataset.copy)); };
   });
   updateStats();
 }
@@ -360,12 +406,10 @@ async function loadCfg() {
   $('#m-lang').textContent = cfg.asrLanguage === 'auto' ? (lang === 'en' ? 'Auto' : '自动')
     : cfg.asrLanguage === 'zh' ? '中文' : 'English';
   setChips('#lang-chips', cfg.asrLanguage);
-  setChips('#inject-chips', cfg.injectMethod === 'type' ? 'type' : 'paste');
-  setChips('#pastekey-chips', cfg.pasteKey || 'ctrl+v');
+  setChips('#inject-chips', cfg.injectMethod);
   setChips('#pos-chips', cfg.overlayPosition);
   setChips('#uilang-chips', cfg.uiLang);
   $('#sw-toggle').classList.toggle('on', cfg.mode === 'toggle');
-  $('#sw-restore').classList.toggle('on', !!cfg.restoreClipboard);
   $('#sw-mic').classList.toggle('on', cfg.keepMicWarm !== false);
   $('#sw-strip').classList.toggle('on', !!cfg.stripTrailingPunct);
   $('#sw-autostart').classList.toggle('on', !!cfg.autostart);
@@ -428,6 +472,7 @@ $$('.nav').forEach(n => n.onclick = () => go(n.dataset.page));
 function go(page) {
   $$('.nav').forEach(x => x.classList.toggle('on', x.dataset.page === page));
   $$('.page').forEach(p => p.classList.toggle('on', p.dataset.p === page));
+  if (page === 'clipboard') refreshClipboard();
 }
 
 /* ---------------- 控件 ---------------- */
@@ -440,18 +485,12 @@ $$('#lang-chips .chip').forEach(b => b.onclick = () => {
   patch({ asrLanguage: b.dataset.v });
 });
 $$('#inject-chips .chip').forEach(b => b.onclick = () => { setChips('#inject-chips', b.dataset.v); patch({ injectMethod: b.dataset.v }); });
-$$('#pastekey-chips .chip').forEach(b => b.onclick = () => { setChips('#pastekey-chips', b.dataset.v); patch({ pasteKey: b.dataset.v }); });
 $$('#pos-chips .chip').forEach(b => b.onclick = () => { setChips('#pos-chips', b.dataset.v); patch({ overlayPosition: b.dataset.v }); });
 
 $('#sw-toggle').onclick = () => {
   const on = !$('#sw-toggle').classList.contains('on');
   $('#sw-toggle').classList.toggle('on', on);
   patch({ mode: on ? 'toggle' : 'hold' });
-};
-$('#sw-restore').onclick = () => {
-  const on = !$('#sw-restore').classList.contains('on');
-  $('#sw-restore').classList.toggle('on', on);
-  patch({ restoreClipboard: on });
 };
 $('#sw-mic').onclick = () => {
   const on = !$('#sw-mic').classList.contains('on');
@@ -491,6 +530,8 @@ $('#btn-test').onclick = async () => {
   btn.disabled = true;
   m.textContent = lang === 'en' ? 'Connecting…' : '正在连接…';
   m.style.color = 'var(--tx3)';
+  clearTimeout(keyTimer);
+  await patch({ apiKey: $('#in-key').value.trim() });
   const r = await bridge.testConnection();
   btn.disabled = false;
   if (r.ok) {
@@ -557,21 +598,29 @@ window.addEventListener('keyup', (e) => {
 
 /* ---------------- 尝试页 ---------------- */
 let labHeld = false;
+let labStarting = null;
 const mic = $('#mic');
 mic.addEventListener('pointerdown', async (e) => {
   e.preventDefault();
   if (labHeld) return;
   labHeld = true;
-  await bridge.labStart();
+  labStarting = (async () => {
+    clearTimeout(keyTimer);
+    await patch({ apiKey: $('#in-key').value.trim() });
+    return bridge.labStart();
+  })();
+  const started = await labStarting;
+  if (!started) labHeld = false;
 });
 window.addEventListener('pointerup', async () => {
   if (!labHeld) return;
   labHeld = false;
+  await labStarting;
   await bridge.labStop();
 });
 $('#btn-copy-out').onclick = async () => {
   const t = $('#outtxt').textContent.trim();
-  if (t) await navigator.clipboard.writeText(t);
+  if (t) await bridge.copyText(t);
 };
 $('#btn-replay').onclick = toggleReplay;
 $('#btn-clear-out').onclick = () => {
@@ -591,16 +640,16 @@ async function probe() {
   const hk = await bridge.hotkeyProbe();
 
   const missing = [];
-  if (!env.ydotool) missing.push('ydotool');
-  if (!env.wlcopy) missing.push('wl-clipboard');
+  if (!env.inputBridge) missing.push(lang === 'en' ? 'input bridge' : '输入法桥接');
+  if (!env.layerShell) missing.push(lang === 'en' ? 'overlay' : '悬浮层');
   if (!env.parec) missing.push('pulseaudio-utils');
 
   const envEl = $('#env-msg');
   if (missing.length) {
-    envEl.textContent = `缺少 ${missing.join(' / ')}`;
+    envEl.textContent = `${lang === 'en' ? 'Unavailable: ' : '未就绪：'}${missing.join(' / ')}`;
     envEl.style.color = 'var(--err)';
   } else {
-    envEl.textContent = `ydotool · wl-copy · parec ${lang === 'en' ? 'all ready' : '均已就绪'}`;
+    envEl.textContent = `fcitx5 · layer-shell · parec ${lang === 'en' ? 'all ready' : '均已就绪'}`;
     envEl.style.color = 'var(--tx3)';
   }
 
@@ -610,8 +659,8 @@ async function probe() {
     dot.classList.remove('dot-on'); dot.classList.add('dot-off');
     notice.classList.add('show');
     notice.innerHTML = lang === 'en'
-      ? `Global shortcut is inactive: ${hk.permissionError || 'no keyboard device found'}.<br>Run <code>sudo ./install.sh --grant-input</code> and log in again, or start recording from the tray.`
-      : `全局快捷键未生效：${hk.permissionError || '没找到键盘设备'}。<br>执行 <code>sudo ./install.sh --grant-input</code> 后重新登录，或从托盘菜单开始录音。`;
+      ? `Global shortcut is inactive: ${hk.permissionError || 'no keyboard device found'}.<br>Run <code>sudo ./install.sh --grant-input</code>; permission applies immediately.`
+      : `全局快捷键未生效：${hk.permissionError || '没找到键盘设备'}。<br>执行 <code>sudo ./install.sh --grant-input</code>，授权立即生效。`;
   } else {
     dot.classList.add('dot-on'); dot.classList.remove('dot-off');
     notice.classList.remove('show');
@@ -627,13 +676,13 @@ bridge.onHotkeyStatus((s) => {
     const notice = $('#perm-notice');
     notice.classList.add('show');
     notice.innerHTML = lang === 'en'
-      ? `Global shortcut is inactive: ${s.permissionError || 'no keyboard device'}.<br>Run <code>sudo ./install.sh --grant-input</code> and log in again.`
-      : `全局快捷键未生效：${s.permissionError || '没找到键盘设备'}。<br>执行 <code>sudo ./install.sh --grant-input</code> 后重新登录。`;
+      ? `Global shortcut is inactive: ${s.permissionError || 'no keyboard device'}.<br>Run <code>sudo ./install.sh --grant-input</code>; no login needed.`
+      : `全局快捷键未生效：${s.permissionError || '没找到键盘设备'}。<br>执行 <code>sudo ./install.sh --grant-input</code>，无需重新登录。`;
   }
 });
 
 (async () => {
   await loadCfg();
   await probe();
-  renderState({ phase: 'idle' });
+  renderState(await bridge.getState());
 })();

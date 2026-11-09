@@ -48,6 +48,7 @@
       <button class="nav" data-page="settings" data-tip="设置">
         <svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
       </button>
+      <button class="nav" data-page="clipboard" data-tip="剪贴板"><svg viewBox="0 0 24 24"><rect x="6" y="5" width="14" height="16" rx="2"/><path d="M15 5V3H3v14h3"/></svg></button>
       <div class="fill"></div>
       <div class="dot-on" id="svc-dot" title="服务状态"></div>
     </nav>
@@ -137,6 +138,11 @@
         </div>
       </section>
 
+      <section class="page" data-p="clipboard">
+        <div class="pagehead"><h1>剪贴板</h1><div class="sub">自动保存最近 50 条文字和图片，仅存本机。图片可选择复制图像或路径。</div></div>
+        <div class="labbar"><button class="btn" id="clip-import">选择图片</button><button class="btn" id="clip-refresh">刷新</button><button class="btn ghost" id="clip-clear">清空记录</button><span id="clip-status" role="status"></span></div>
+        <div id="clip-list"></div>
+      </section>
       <!-- 设置 -->
       <section class="page" data-p="settings">
         <div class="pagehead">
@@ -204,26 +210,15 @@
           <div class="sect-h"><b data-i18n="set.output">输出</b><i></i></div>
           <div class="card">
             <div class="row">
-              <div class="k"><b data-i18n="set.inject">注入方式</b><span data-i18n="set.inject.d">整段文字一次写入，不做逐字模拟。</span></div>
+              <div class="k"><b data-i18n="set.inject">注入方式</b><span data-i18n="set.inject.d">通过输入法整段提交；报告失败时自动复制结果，供手动粘贴。</span></div>
               <div class="v" id="inject-chips">
-                <button class="chip on" data-v="paste" data-i18n="set.inject.paste">剪贴板粘贴</button>
-                <button class="chip" data-v="type">直接键入</button>
+                <button class="chip on" data-v="fcitx" data-i18n="set.inject.fcitx">输入法直注</button>
+                <button class="chip" data-v="preview" data-i18n="set.inject.preview">仅转写</button>
               </div>
             </div>
             <div class="row">
-              <div class="k"><b data-i18n="set.restore">保留剪贴板</b><span data-i18n="set.restore.d">粘贴后恢复原来的剪贴板内容。</span></div>
-              <div class="v"><div class="sw" id="sw-restore"></div></div>
-            </div>
-            <div class="row">
-              <div class="k"><b data-i18n="set.mic">麦克风常驻</b><span data-i18n="set.mic.d">保持采集，按下即录不掉字。关闭则闲置两分钟后释放麦克风，下次按下要重新启动。</span></div>
+              <div class="k"><b data-i18n="set.mic">麦克风常驻</b><span data-i18n="set.mic.d">保持采集，按下即录不掉字。关闭后录音结束即释放，下次启动会有延迟。</span></div>
               <div class="v"><div class="sw" id="sw-mic"></div></div>
-            </div>
-            <div class="row">
-              <div class="k"><b data-i18n="set.term">终端粘贴组合</b><span data-i18n="set.term.d">部分终端需要 Ctrl+Shift+V。</span></div>
-              <div class="v" id="pastekey-chips">
-                <button class="chip on" data-v="ctrl+v">Ctrl+V</button>
-                <button class="chip" data-v="ctrl+shift+v">Ctrl+Shift+V</button>
-              </div>
             </div>
             <div class="row">
               <div class="k"><b data-i18n="set.strip">去掉句尾标点</b><span data-i18n="set.strip.d">适合命令行或代码输入。</span></div>

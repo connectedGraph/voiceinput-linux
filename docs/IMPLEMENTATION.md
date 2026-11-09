@@ -87,28 +87,28 @@ MiMo 的接口是 `POST /chat/completions` + `input_audio`，**音频必须一�
 
 SSE 解析做了兼容：优先 `choices[0].delta.content`，其次 `delta.text`，再退到 `message.content`。
 
-## 注入：为什么中英文走两条路
+## 注入：一次输入法提交
 
-`ydotool` 通过 `/dev/uinput` 在内核层创建虚拟键盘，所以在 Wayland 原生窗口和 XWayland 窗口上都能生效——这是 `xdotool`（只对 X11 客户端）和 `wtype`（只对 Wayland 客户端）做不到的。
+注入只调用 Fcitx 的 `InputContext::commitString`：整段文本一次提交，不写剪贴板，不创建虚拟键盘，也不发送 `Ctrl+V` 或 `Ctrl+Shift+V`。开始录音时先捕获当前输入上下文 UUID，识别完成后再次校验焦点没有变化，随后提交一次。
 
-但 `ydotool type` 只能敲 ASCII。中文没有对应的键码，必须走输入法。
+这要求目标窗口向 Fcitx 注册输入法上下文。终端的粘贴快捷键和输入法支持互相独立。2026-11-09 实测 COSMIC Terminal 的原始 PTY 接收程序、XWayland 文本框以及 Codex TUI 输入框均收到中文输入法提交。
 
-所以：
+桥接返回 OK 仅表示已调用 `commitString`，没有目标应用的显示确认。界面因此标注“已提交给输入法”。`NO_INPUT_FOCUS`、`FOCUS_CHANGED`、`INPUT_BRIDGE_UNAVAILABLE` 等明确失败会通过 Electron clipboard API 自动复制全文，并提示手动粘贴。若目标应用静默丢弃文字，无法通用检测，托盘可复制最近识别结果。
 
-- **纯 ASCII** → `ydotool type`，直接敲，不进剪贴板
-- **含非 ASCII** → `wl-copy` 写剪贴板 + `ydotool key ctrl+v`
-
-设置里"直接键入"是默认，但含中文时会自动回落到粘贴。这是硬件键盘协议的边界，不是实现偷懒。
-
-注意 `ydotool key` 的语法是 `ctrl+v` 这种组合串，不是 `ctrl:1 v:1`。
-
-`wl-copy` 写完会 fork 一个进程常驻持有剪贴板内容，所以要用 `detached + unref`，否则主进程退出会被拖住。
+剪贴板模块每 1.5 秒只读采样文字与图片，按内容去重，最多保存 50 条至用户配置目录。图片存 PNG，保留已知源文件路径；无源路径的截图可复制 PNG 缓存路径。缩略图生成一次后按 id 缓存，打开剪贴板页不会把 50 张图重新解码缩放。用户显式选择复制时才写入相应格式。失败自动复制是另一处经用户授权的写入，不会发送任何粘贴按键。
 
 ## 悬浮窗
 
-`BrowserWindow` 用 `frame: false` + `transparent: true` + `focusable: false` + `setIgnoreMouseEvents(true, { forward: true })`。
+Wayland 下不走 `BrowserWindow.show()`，而是 **offscreen 渲染 + 原生 layer-shell 显示**：
 
-`focusable: false` 是关键：录音时悬浮窗出现不能抢走目标输入框的焦点，否则粘贴会打到悬浮窗自己身上。X11 下窗口深度是 32（ARGB），透明和圆角都正常。
+- Electron 窗口 `show: false` + `webPreferences.offscreen: true`，`setFrameRate(30)`
+- `paint` 事件拿到帧，交给 `build/layer-overlay`（GTK + gtk-layer-shell）贴到屏幕底部
+- 帧走原始 BGRA（`nativeImage.getBitmap()`），helper 端直接 memcpy 进 Cairo 的 ARGB32 surface，
+  **不再在 Electron 主线程做 `toPNG()`**；helper 的 READY 握手带版本号，老 helper 自动退回 PNG
+- 录音/转写期间按需出帧；`hide()` 会 `stopPainting()`，隐藏后不再产生任何帧
+
+`focusable: false` 是关键：录音时悬浮窗出现不能抢走目标输入框的焦点，否则粘贴会打到悬浮窗自己身上。
+X11 下窗口深度是 32（ARGB），透明和圆角都正常。
 
 `alwaysOnTop` 用 `screen-saver` 级别，配合 `setVisibleOnAllWorkspaces`，切工作区也跟着走。
 
@@ -128,15 +128,36 @@ SSE 解析做了兼容：优先 `choices[0].delta.content`，其次 `delta.text`
 
 ## 性能上的几个注意
 
-- 电平更新每 80ms 一次，走单独的 IPC 通道，**不触发托盘图标重绘**。早期版本每次电平更新都调 `tray.setImage()`，等于每 80ms 做一次图片 resize，主进程被拖慢，热键 release 响应跟着变迟。
-- 转写期间每个 SSE chunk 都会推一次状态，渲染层只更新文字节点，不重建整页。
-- 录音期间渲染层只有波形在动，走轻量路径直接返回。
+2026-11-09 修过一轮“闲着一动不动就吃掉 20% 单核”的问题，教训都写在这里：
+
+- **offscreen 窗口的 CSS 动画即使 `opacity:0` 也会持续出帧。** 悬浮窗 HUD 里的小圆点原本是
+  `animation:blink ... infinite`，页面加载即开跑，于是隐藏的悬浮窗一直 30fps 合成、
+  每帧经 IPC 丢给主进程，主进程和 GPU 进程都被拖着。现在所有无限动画都挂在 `.hud.show` 下，
+  隐藏时实测 30.2fps → 0.3fps。
+- **主线程里不要做 `toPNG()`。** 悬浮窗每帧 560×96，PNG 编码在主线程，叠加 GTK 端解码，
+  录音时直接把界面拖卡。现在改传原始 BGRA，helper 只做一次 memcpy。
+- **不要每个 SSE chunk 都全量广播。** 服务端 10–20ms 一个增量，原实现每个增量都广播、
+  写一条同步 `appendFileSync` 日志、触发悬浮窗重绘。现在文字合并到 20Hz（`pushText`），
+  日志改异步追加（队列满就丢），最后一定 `flushText()` 不丢尾字。
+- **电平更新每 80ms 一次**，走单独的 IPC 通道，**不触发托盘图标重绘**。早期版本每次电平更新都调
+  `tray.setImage()`，等于每 80ms 做一次图片 resize，主进程被拖慢，热键 release 响应跟着变迟。
+- **录音期间渲染层只有波形在动**，走轻量路径直接返回，不重建整页。
+- 热键用 20ms 轮询 `/dev/input/event*`（`readSync` + `EAGAIN`），每个设备约 50 次/秒，
+  开销很小，换来的是 Wayland 下不依赖 portal 的纯修饰键热键。
 
 ## 已知取舍
+
+### 验证入口
+
+`npm run test:clipboard` 和 `npm run test:fallback` 使用 Xvfb 隔离剪贴板，验证 Unicode、图片二进制、原路径保留、持久化、清空，以及无焦点/焦点变化/桥接故障自动复制。无需开本地测试接口；fallback 在进程内替换录音、ASR 和注入回执。系统需安装 `xvfb`。
+
+真实桌面中运行 `npm run test:input`：新开 COSMIC Terminal，以 raw PTY 接收中文并核对字节。`npm run test:codex`：新开独立 Codex TUI，把验证文字交给输入法，从终端输出核对输入框回显并截图，不按回车、不发送模型请求。桌面必须解锁；若 agent shell 缺少桌面变量，本机使用 `DISPLAY=:1 WAYLAND_DISPLAY=wayland-1`。测试只关闭自己创建的进程。
+
+2026-11-09 Codex TUI 实测证据目录：`/data/scratch/mimo-codex-input-ENTZsU/`。桥接 OK、终端回显和截图共同验证了这次输入，不能据此承诺所有应用都能接收。
 
 | 问题 | 现在 | 原因 |
 |---|---|---|
 | 麦克风常驻 | 默认是，可关 | 换取零启动延迟；关掉后开头有启动延迟 |
-| 中文不能直敲 | 走剪贴板 | 虚拟键盘没有中文键码 |
+| 目标没有输入法上下文 | 自动复制结果 | 不模拟按键，由用户手动粘贴 |
 | 单次 3.5 分钟 | 是 | 接口 10MB base64 限制 |
 | 纯修饰键组合 | 自读 evdev | Wayland 无 GlobalShortcuts |

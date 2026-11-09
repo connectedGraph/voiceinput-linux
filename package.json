@@ -6,8 +6,13 @@
   "bin": { "mimo-asr": "bin/mimo-asr.js" },
   "scripts": {
     "start": "electron .",
-    "dev": "MICRO_DEBUG=1 electron .",
-    "icons": "node scripts/gen-icons.js"
+    "dev": "MIMO_DEBUG=1 electron .",
+    "test:clipboard": "env -u WAYLAND_DISPLAY xvfb-run -a electron tests/clipboard.cjs --no-sandbox --ozone-platform=x11 --disable-gpu",
+    "test:fallback": "env -u WAYLAND_DISPLAY xvfb-run -a electron tests/fallback.cjs --no-sandbox --ozone-platform=x11 --disable-gpu",
+    "test:input": "node tests/native-input.cjs",
+    "test:codex": "node tests/codex-input.cjs",
+    "icons": "node scripts/gen-icons.js",
+    "trim": "bash scripts/trim-runtime.sh"
   },
   "license": "MIT",
   "devDependencies": {

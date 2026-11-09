@@ -1,13 +1,17 @@
 'use strict';
-const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, screen, globalShortcut, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const config = require('./config');
 const { Recorder } = require('./recorder');
 const { transcribe, ping } = require('./asr');
-const { inject, has } = require('./inject');
+const { inject, has, captureTarget, bridgeReady } = require('./inject');
 const { HotkeyWatcher } = require('./evdev');
+const { Overlay } = require('./overlay');
+const { ClipboardStore } = require('./clipboard');
+const { trace } = require('./diagnostics');
+let clipboardStore = null;
 
 // 单实例
 app.setName('MiMo ASR');
@@ -27,7 +31,7 @@ if (!app.requestSingleInstanceLock()) {
 app.commandLine.appendSwitch('enable-features', 'GlobalShortcutsPortal');
 
 let mainWin = null;
-let overlayWin = null;
+let overlay = null;
 let tray = null;
 let watcher = null;
 let lastLevelAt = 0;
@@ -41,9 +45,9 @@ const recorder = new Recorder({
 });
 
 let state = { phase: 'idle', text: '', durationMs: 0, error: '', hint: '', theme: config.load().theme || 'auto' };
-let pendingText = '';
+let targetPromise = null;
+let previewOnly = false;
 let abortCtrl = null;
-let hideTimer = null;
 let hudEnabled = true;
 
 const ASSETS = path.join(__dirname, '..', 'assets');
@@ -53,21 +57,50 @@ function pushOnly(patch) {
   sendState();
 }
 
+let textPushTimer = null;
+let lastTextPush = 0;
+let pendingText = '';
+const TEXT_PUSH_MS = 50;
+// 识别结果是每 10–20ms 一个增量；每个增量都全量广播 + 重绘会把主线程和悬浮窗打爆。
+// 这里合并到 20Hz，最后一帧由调用方显式 flush 保证不丢。
+function pushText(full) {
+  pendingText = full;
+  const now = Date.now();
+  const wait = TEXT_PUSH_MS - (now - lastTextPush);
+  if (wait <= 0) {
+    lastTextPush = now;
+    broadcast({ text: full });
+    return;
+  }
+  if (!textPushTimer) {
+    textPushTimer = setTimeout(() => {
+      textPushTimer = null;
+      lastTextPush = Date.now();
+      broadcast({ text: pendingText });
+    }, wait);
+  }
+}
+
+function flushText() {
+  if (textPushTimer) { clearTimeout(textPushTimer); textPushTimer = null; }
+  if (pendingText) { lastTextPush = Date.now(); broadcast({ text: pendingText }); }
+}
+
 function sendState() {
-  for (const w of [mainWin, overlayWin]) {
+  for (const w of [mainWin]) {
     if (w && !w.isDestroyed()) w.webContents.send('state', state);
   }
-  // 非激活的透明窗口有时不发新帧，显式请求重绘
-  if (overlayWin && !overlayWin.isDestroyed() && state.phase !== 'idle') {
-    try { overlayWin.webContents.invalidate(); } catch (_) {}
-  }
+  if (overlay) overlay.send({ ...state, uiLang: config.load().uiLang });
 }
 
 function broadcast(patch) {
   const prevPhase = state.phase;
   state = { ...state, ...patch };
   sendState();
-  if (state.phase !== prevPhase) updateTray();
+  if (state.phase !== prevPhase) {
+    trace('phase', { from: prevPhase, to: state.phase, chars: state.text.length, error: state.error, copiedFallback: !!state.copiedFallback });
+    updateTray();
+  }
 }
 
 /* ---------------- 窗口 ---------------- */
@@ -106,62 +139,17 @@ function createMainWindow() {
   mainWin.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
 }
 
-function overlayBounds() {
-  const pos = config.load().overlayPosition || 'bottom';
-  const cur = screen.getCursorScreenPoint();
-  const display = screen.getDisplayNearestPoint(cur) || screen.getPrimaryDisplay();
-  const { x, y, width, height } = display.workArea;
-  const w = 560, h = 96;
-  return {
-    x: Math.round(x + (width - w) / 2),
-    y: pos === 'top' ? y + 56 : y + height - h - 64,
-    width: w, height: h
-  };
-}
-
 function createOverlay() {
-  overlayWin = new BrowserWindow({
-    ...overlayBounds(),
-    frame: false,
-    transparent: true,
-    resizable: false,
-    movable: false,
-    minimizable: false,
-    maximizable: false,
-    fullscreenable: false,
-    skipTaskbar: true,
-    focusable: false,
-    show: false,
-    hasShadow: false,
-    alwaysOnTop: true,
-    type: 'notification',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      backgroundThrottling: false
-    }
-  });
-  try { overlayWin.webContents.setBackgroundThrottling(false); } catch (_) {}
-  overlayWin.loadFile(path.join(__dirname, 'ui', 'overlay.html'));
-  overlayWin.setAlwaysOnTop(true, 'screen-saver');
-  overlayWin.setIgnoreMouseEvents(true, { forward: true });
-  try { overlayWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch (_) {}
+  overlay = new Overlay(config.load);
+  overlay.window.webContents.on('did-finish-load', sendState);
 }
 
 function showOverlay() {
-  if (!overlayWin || overlayWin.isDestroyed()) return;
-  clearTimeout(hideTimer);
-  overlayWin.setBounds(overlayBounds());
-  overlayWin.showInactive();
-  overlayWin.setAlwaysOnTop(true, 'screen-saver');
+  if (overlay) overlay.show();
 }
 
 function hideOverlaySoon(ms = 1400) {
-  clearTimeout(hideTimer);
-  hideTimer = setTimeout(() => {
-    if (overlayWin && !overlayWin.isDestroyed()) overlayWin.hide();
-  }, ms);
+  if (overlay) overlay.hideSoon(ms);
 }
 
 /* ---------------- 托盘 ---------------- */
@@ -187,6 +175,11 @@ function buildTray() {
     { type: 'separator' },
     { label: state.phase === 'recording' ? (zh ? '结束录音' : 'Stop') : (zh ? '开始录音' : 'Start recording'), click: () => toggleManual() },
     { label: zh ? '尝试页' : 'Playground', click: () => { mainWin.show(); mainWin.webContents.send('goto', 'lab'); } },
+    { label: zh ? '剪贴板' : 'Clipboard', click: () => { mainWin.show(); mainWin.focus(); mainWin.webContents.send('goto', 'clipboard'); } },
+    { label: zh ? '复制最近识别结果' : 'Copy latest transcription', click: () => {
+      const text = state.text || config.load().history[0]?.text;
+      if (text) clipboardStore.copyText(text);
+    } },
     { type: 'separator' },
     { label: zh ? '退出' : 'Quit', click: () => { app.isQuitting = true; app.quit(); } }
   ]);
@@ -210,22 +203,37 @@ function requireKey() {
 }
 
 function startRecording(opts = {}) {
-  if (state.phase === 'recording' || state.phase === 'transcribing') return;
+  if (['recording', 'transcribing', 'injecting'].includes(state.phase)) return false;
   const cfg = requireKey();
-  if (!cfg) return;
-  hudEnabled = opts.showHud !== false;
+  if (!cfg) return false;
+  if (textPushTimer) { clearTimeout(textPushTimer); textPushTimer = null; }
   pendingText = '';
+  lastTextPush = 0;
+  hudEnabled = opts.showHud !== false;
+  previewOnly = opts.previewOnly === true || cfg.injectMethod === 'preview';
+  // Start acquiring the focus token immediately, without delaying the audio boundary.
+  targetPromise = previewOnly ? null : captureTarget().then(target => {
+    console.log('[inject] target captured', target);
+    trace('focus-captured', { target });
+    return { target };
+  }, error => {
+    console.error('[inject] target capture failed', error.message);
+    trace('focus-failed', { error: error.message });
+    return { error: error.message };
+  });
   console.log('[asr] begin @', Date.now() % 100000);
   recorder.warmUp(cfg.audioSource);   // 常驻，幂等；启动时已预热的话这里是空操作
   recorder.begin();                   // 立刻打标记：此刻起（含前 350ms）都算录音
   if (hudEnabled) showOverlay();
-  broadcast({ phase: 'recording', text: '', error: '', durationMs: 0, level: 0 });
+  broadcast({ phase: 'recording', text: '', error: '', copiedFallback: false, durationMs: 0, level: 0, peak: null, previewOnly });
+  return true;
 }
 
 async function stopAndTranscribe() {
   if (state.phase !== 'recording') return;
   const cfg = config.load();
   const rec = recorder.end();          // 同步冻结，松手那一刻就是终点
+  if (cfg.keepMicWarm === false) recorder.shutdown();
   console.log('[asr] end @', Date.now() % 100000, '->', rec ? (rec.durationMs / 1000).toFixed(2) + 's' : 'null');
   if (!rec) {
     broadcast({ phase: 'idle' });
@@ -254,13 +262,14 @@ async function stopAndTranscribe() {
       rec.path,
       {
         signal: abortCtrl.signal,
-        onDelta: (_piece, full) => {
-          if (!config.load().previewWhileTranscribing) return;
-          broadcast({ text: full });
+        onDelta: (piece, full) => {
+          // 服务端结果是流式的；合并后再广播，避免每个 chunk 都重绘一次。
+          pushText(full);
         }
       }
     );
     try { fs.unlinkSync(rec.path); } catch (_) {}
+    flushText();
 
     if (!result.text) {
       broadcast({ phase: 'error', error: 'EMPTY_RESULT' });
@@ -271,34 +280,42 @@ async function stopAndTranscribe() {
     let text = result.text;
     if (cfg.stripTrailingPunct) text = text.replace(/[。、，,.]+\s*$/, '');
 
-    broadcast({ phase: 'injecting', text });
-    const r = await inject(text, {
-      method: cfg.injectMethod === 'type' ? 'type' : 'paste',
-      restoreClipboard: cfg.restoreClipboard,
-      pasteKey: cfg.pasteKey
-    });
+    // Keep the recognized result even when the target loses focus or injection fails.
+    config.pushHistory({ text, durationMs: rec.durationMs, latencyMs: result.latencyMs });
+    if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('history', config.load().history);
+    broadcast({ text, latencyMs: result.latencyMs });
+    const target = targetPromise ? await targetPromise : {};
+    if (!previewOnly) broadcast({ phase: 'injecting', text });
+    const r = previewOnly ? { ok: true } : target.error ? { ok: false, reason: target.error }
+      : await inject(text, { target: target.target });
+    console.log('[inject] result', { previewOnly, ok: r.ok, method: r.method, reason: r.reason });
+    trace('input-method-reply', { previewOnly, accepted: r.ok, method: r.method, reason: r.reason });
     if (!r.ok) {
-      broadcast({ phase: 'error', error: r.reason || 'INJECT_FAILED', text });
+      let copiedFallback = false;
+      try { clipboardStore.copyText(text); copiedFallback = true; }
+      catch (error) { console.error('[clipboard] fallback failed', error.message); }
+      broadcast({ phase: 'error', error: r.reason || 'INJECT_FAILED', text, copiedFallback });
       hideOverlaySoon(2400);
       return;
     }
-    config.pushHistory({ text, durationMs: rec.durationMs, latencyMs: result.latencyMs });
     broadcast({ phase: 'done', text, durationMs: rec.durationMs, peak: rec.peak });
     hideOverlaySoon(1200);
-    if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('history', config.load().history);
   } catch (err) {
     try { fs.unlinkSync(rec.path); } catch (_) {}
     broadcast({ phase: 'error', error: err.message });
     hideOverlaySoon(2600);
   } finally {
     abortCtrl = null;
+    targetPromise = null;
     if (config.load().keepMicWarm === false) recorder.shutdown();
   }
 }
 
 function cancelRecording() {
   recorder.cancel();
+  if (config.load().keepMicWarm === false) recorder.shutdown();
   broadcast({ phase: 'idle' });
+  targetPromise = null;
   hideOverlaySoon(200);
 }
 
@@ -347,6 +364,12 @@ function restartHotkey() {
 /* ---------------- IPC ---------------- */
 
 function registerIpc() {
+  ipcMain.handle('clipboard:list', () => { clipboardStore.capture(); return clipboardStore.list(); });
+  ipcMain.handle('clipboard:copy', (_e, id, mode) => { clipboardStore.copy(id, mode); return true; });
+  ipcMain.handle('clipboard:text', (_e, text) => { clipboardStore.copyText(text); return true; });
+  ipcMain.handle('clipboard:import', async () => { await clipboardStore.importImage(mainWin); return clipboardStore.list(); });
+  ipcMain.handle('clipboard:clear', () => { clipboardStore.clear(); return []; });
+  ipcMain.handle('state:get', () => ({ ...state, uiLang: config.load().uiLang }));
   ipcMain.handle('config:get', () => {
     const cfg = config.load();
     return { ...cfg, history: cfg.history };
@@ -356,7 +379,7 @@ function registerIpc() {
     if (patch.keepMicWarm !== undefined) {
       recorder.idleShutdownMs = patch.keepMicWarm ? 0 : 120000;
       if (patch.keepMicWarm) recorder.warmUp(next.audioSource);
-      else recorder.shutdown();
+      else if (state.phase !== 'recording') recorder.shutdown();
     }
     if (patch.theme) broadcast({ theme: patch.theme });
     if (patch.hotkey || patch.mode || patch.uiLang) {
@@ -379,7 +402,7 @@ function registerIpc() {
     }
   });
 
-  ipcMain.handle('lab:start', () => { startRecording({ showHud: false }); return true; });
+  ipcMain.handle('lab:start', () => startRecording({ showHud: false, previewOnly: true }));
   ipcMain.handle('audio:last', () => {
     try {
       const p = path.join(os.tmpdir(), 'mimo-asr', 'last.wav');
@@ -417,8 +440,8 @@ function registerIpc() {
   ipcMain.handle('app:quit', () => { app.isQuitting = true; app.quit(); });
   ipcMain.handle('app:open-config-dir', () => shell.openPath(config.CONFIG_DIR));
   ipcMain.handle('env:check', () => ({
-    ydotool: has('ydotool'),
-    wlcopy: has('wl-copy'),
+    inputBridge: bridgeReady(),
+    layerShell: overlay ? overlay.ready : false,
     parec: has('parec')
   }));
 }
@@ -436,6 +459,9 @@ function revealMainWindow() {
 app.on('second-instance', revealMainWindow);
 
 app.whenReady().then(() => {
+  trace('startup', { pid: process.pid, version: app.getVersion(), display: process.env.DISPLAY, wayland: process.env.WAYLAND_DISPLAY });
+  clipboardStore = new ClipboardStore();
+  clipboardStore.start();
   createMainWindow();
   createOverlay();
   registerIpc();
@@ -447,7 +473,7 @@ app.whenReady().then(() => {
     // keepMicWarm=true  -> 0：一直常驻，零延迟
     // keepMicWarm=false -> 120000：闲置两分钟释放
     recorder.idleShutdownMs = c0.keepMicWarm === false ? 120000 : 0;
-    recorder.warmUp(c0.audioSource);
+    if (c0.keepMicWarm !== false) recorder.warmUp(c0.audioSource);
   } catch (_) {}
 
   // 托盘/面板里切换语言时重建菜单
@@ -456,8 +482,14 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => { /* 常驻托盘 */ });
 app.on('before-quit', () => {
+  if (clipboardStore) clipboardStore.stop();
   app.isQuitting = true;
   try { recorder.shutdown(); } catch (_) {}
+  if (abortCtrl) abortCtrl.abort();
+  if (overlay) overlay.destroy();
   if (watcher) watcher.stop();
-  try { globalShortcut.unregisterAll(); } catch (_) {}
 });
+
+// Used by the desktop integration runner; no diagnostic IPC or network listener.
+module.exports = { startRecording, stopAndTranscribe, cancelRecording, broadcast,
+  getState: () => state, getMainWindow: () => mainWin, getOverlay: () => overlay };

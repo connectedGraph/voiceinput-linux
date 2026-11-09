@@ -33,8 +33,6 @@ html,body{width:100%;height:100%;background:transparent;overflow:hidden;
 .hud{
   width:100%;height:80px;border-radius:19px;display:flex;align-items:center;gap:15px;padding:0 20px;
   background:var(--hud-bg);
-  backdrop-filter:blur(28px) saturate(160%);
-  -webkit-backdrop-filter:blur(28px) saturate(160%);
   border:1px solid var(--hud-line);
   box-shadow:var(--hud-shadow);
   opacity:0;transform:translateY(10px) scale(.985);transition:.3s var(--ease);
@@ -43,8 +41,11 @@ html,body{width:100%;height:100%;background:transparent;overflow:hidden;
 .hud.err{border-color:var(--err)}
 .hud.done{border-color:var(--ok)}
 
+/* 动画只在 HUD 真正可见时跑：offscreen 窗口即便 opacity:0 也会按帧合成，
+   空转的 CSS 动画会让渲染器一直 30fps 出帧，白烧一个核。 */
 .dot{width:7px;height:7px;border-radius:50%;background:var(--ac);flex:0 0 7px;
-  box-shadow:0 0 12px var(--ac);animation:blink 1.4s ease-in-out infinite}
+  box-shadow:0 0 12px var(--ac)}
+.hud.show.rec .dot{animation:blink 1.4s ease-in-out infinite}
 .hud.settle .dot{animation:none}
 .hud.done .dot{background:var(--ok);box-shadow:0 0 12px var(--ok);animation:none}
 .hud.err .dot{background:var(--err);box-shadow:0 0 12px var(--err);animation:none}
@@ -52,7 +53,7 @@ html,body{width:100%;height:100%;background:transparent;overflow:hidden;
 
 .bars{display:flex;align-items:center;gap:2.5px;height:24px;flex:0 0 auto}
 .bars i{width:2.5px;border-radius:2px;background:var(--ac);height:5px;transition:height .2s}
-.hud.rec .bars i{animation:bar 1s ease-in-out infinite}
+.hud.show.rec .bars i{animation:bar 1s ease-in-out infinite}
 .hud.live .bars i{animation:none}
 .bars i:nth-child(1){animation-delay:0s}.bars i:nth-child(2){animation-delay:.13s}
 .bars i:nth-child(3){animation-delay:.26s}.bars i:nth-child(4){animation-delay:.39s}
@@ -64,7 +65,8 @@ html,body{width:100%;height:100%;background:transparent;overflow:hidden;
 .txt{flex:1;min-width:0;font-size:13.5px;color:var(--tx3);white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis;transition:color .2s}
 .txt.has{color:var(--tx)}
-.cur{display:inline-block;width:2px;height:14px;background:var(--ac);vertical-align:-2px;margin-left:2px;animation:blink 1s steps(2) infinite}
+.cur{display:inline-block;width:2px;height:14px;background:var(--ac);vertical-align:-2px;margin-left:2px}
+.hud.show .cur{animation:blink 1s steps(2) infinite}
 .time{flex:0 0 auto;font-size:11.5px;color:var(--tx3);
   font-family:"Geist Mono","Fira Mono",monospace;font-variant-numeric:tabular-nums}
 .ok{flex:0 0 auto;display:flex;align-items:center;gap:6px;color:var(--ok);font-size:11.5px;
@@ -82,7 +84,7 @@ html,body{width:100%;height:100%;background:transparent;overflow:hidden;
     <div class="time" id="time">00:00</div>
     <div class="ok">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg>
-      已输入
+      <span id="done-label">已输入</span>
     </div>
   </div>
 </div>
@@ -110,6 +112,10 @@ function renderBars(level) {
 
 window.api.onState((s) => {
   if (s.theme) document.documentElement.dataset.theme = s.theme;
+  const en = s.uiLang === 'en';
+  document.documentElement.lang = en ? 'en' : 'zh';
+  document.getElementById('done-label').textContent = s.previewOnly
+    ? (en ? 'Transcribed' : '已转写') : (en ? 'Submitted' : '已提交');
 
   const changed = s.phase !== lastPhase;
   lastPhase = s.phase;
@@ -123,7 +129,7 @@ window.api.onState((s) => {
     if (typeof s.level === 'number') renderBars(s.level);
     if (changed) {
       txt.className = 'txt';
-      txt.textContent = '正在听…';
+      txt.textContent = en ? 'Listening…' : '正在听…';
       t0 = Date.now();
       setClock(0);
       timer = setInterval(() => setClock(Date.now() - t0), 200);
@@ -134,7 +140,8 @@ window.api.onState((s) => {
     setClock(s.durationMs || 0);
     txt.className = s.text ? 'txt has' : 'txt';
     if (s.text) txt.innerHTML = esc(s.text) + '<span class="cur"></span>';
-    else txt.textContent = '识别中…';
+    else txt.textContent = en ? 'Transcribing…' : '识别中…';
+    txt.scrollLeft = txt.scrollWidth;
   } else if (s.phase === 'injecting') {
     hud.classList.add('show', 'settle');
     txt.className = 'txt has';
@@ -147,9 +154,12 @@ window.api.onState((s) => {
     hud.classList.add('show', 'settle', 'err');
     txt.className = 'txt has';
     const e = s.error || '';
-    txt.textContent =
-      e === 'NO_API_KEY' ? '还没填 API Key' :
-      e === 'EMPTY_RESULT' ? '没听清，再来一次' : e.slice(0, 70);
+    txt.textContent = s.copiedFallback ? (en ? 'Insertion failed. Copied; paste manually.' : '未能注入，已复制，请手动粘贴') :
+      e === 'NO_API_KEY' ? (en ? 'No API key' : '还没填 API Key') :
+      e === 'EMPTY_RESULT' ? (en ? 'Nothing heard, try again' : '没听清，再来一次') :
+      e === 'FOCUS_CHANGED' ? (en ? 'Focus changed. Result saved.' : '焦点已改变，结果已保留') :
+      e === 'NO_INPUT_FOCUS' ? (en ? 'No input focus. Result saved.' : '没有可用输入焦点，结果已保留') :
+      e === 'INPUT_BRIDGE_UNAVAILABLE' ? (en ? 'Input bridge unavailable. Result saved.' : '输入法桥接未运行，结果已保留') : e.slice(0, 70);
   } else {
     hud.className = 'hud';
     clearInterval(timer);

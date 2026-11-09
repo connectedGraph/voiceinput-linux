@@ -30,6 +30,8 @@
 - **任意快捷键**，包括 `Ctrl + Win` 这种纯修饰键组合
 - **流式出字**：识别结果逐字浮现在悬浮窗，松手后整段一次注入，不做打字机模拟
 - **回听原始录音**：每次录音留一份 wav，配合峰值电平判断到底是没录到还是识别不准
+- **失败自动复制**：输入桥接报错、无输入焦点或焦点变化时，自动复制完整识别结果，提示手动粘贴；不发送合成键
+- **剪贴板**：本机保存最近 50 条文字/图片；图片可选择复制图像或文件路径，支持选择图片导入
 - **实时电平**：悬浮窗波形由真实音频驱动
 - **日间 / 夜间 / 跟随系统**：三态主题，全部走 CSS 变量
 - **中英双语**界面
@@ -42,7 +44,7 @@
 git clone https://github.com/connectedGraph/voiceinput-linux.git
 cd voiceinput-linux
 
-sudo apt install pulseaudio-utils ydotool wl-clipboard
+sudo apt install pulseaudio-utils fcitx5
 ./install.sh                       # 依赖、图标、启动器
 sudo ./install.sh --grant-input    # 全局热键所需的键盘读取权限
 ```
@@ -52,6 +54,9 @@ sudo ./install.sh --grant-input    # 全局热键所需的键盘读取权限
 > 这条权限意味着该用户能读到所有键盘输入事件（包括密码）。所有 Linux 全局热键工具都是这个做法——Wayland 没有别的合法途径，COSMIC 的 portal 也没实现 GlobalShortcuts。不想给的话，托盘菜单和面板里的按钮仍然能触发录音，只是全局快捷键失效。
 
 启动后到 **设置 → 接口** 填上 MiMo 的 API Key，点「测试连接」确认通畅。
+
+> 磁盘占用：Electron 自带 55 种语言包，`./install.sh` 会自动裁到中英文，安装体积少约 40 MB。
+> 已经装过的可以随时重跑：`npm run trim`。
 
 ## 使用
 
@@ -105,14 +110,17 @@ sudo ./install.sh --grant-input    # 全局热键所需的键盘读取权限
   "asrLanguage": "auto",
   "mode": "hold",
   "hotkey": ["Ctrl", "Super"],
-  "injectMethod": "type",
-  "restoreClipboard": true,
+  "injectMethod": "fcitx",
   "stripTrailingPunct": false,
   "theme": "auto"
 }
 ```
 
-`hotkey` 是逻辑键名数组，`Super` 就是 Win 键。`injectMethod` 为 `type` 时，纯 ASCII 直接键入，含中文自动回落到剪贴板粘贴——虚拟键盘没有中文键码，这是协议边界。
+`hotkey` 是逻辑键名数组，`Super` 就是 Win 键。`injectMethod` 为 `fcitx` 时，整段文本通过 Fcitx `commitString` 一次提交，成功提交时不写剪贴板，不发送合成键。目标窗口必须有可用的输入法上下文。报告失败时自动复制结果，需手动粘贴。
+
+剪贴板记录保存在 `~/.config/mimo-asr/clipboard/`，最多 50 条。截图没有原路径时保留一份 PNG，供“复制路径”使用；导入图片保留原文件路径。清空记录会删除历史缓存图像，不清空系统剪贴板。侧栏或托盘均可打开剪贴板。
+
+诊断日志：`~/.local/state/mimo-asr/events.jsonl`，记录启动 PID、焦点捕获、ASR 增量字符数、输入法回执与自动复制状态；超过 1 MB 轮转一份。默认不记录识别正文。
 
 ## 命令行
 
@@ -134,9 +142,10 @@ mimo-asr --transcribe a.wav --json   # 结构化输出
 ## 已知限制
 
 - 仅 Linux
-- 中文走剪贴板 + `Ctrl+V`，部分终端需要在设置里切成 `Ctrl+Shift+V`
+- 自动注入依赖输入法上下文。终端使用 `Ctrl+Shift+V` 粘贴不影响其输入法支持；没有输入法上下文或桥接报错时自动复制，手动粘贴即可
+- “已提交给输入法”表示桥接接受文本，无法通用地确认任意目标软件实际显示。未显示时可通过托盘“复制最近识别结果”手动取回
 - 单次录音上限约 3.5 分钟
-- XWayland 下 `wl-copy` 会继承主进程的 fd，属于已知无害的瑕疵
+- 输入法桥接依赖当前会话中的 Fcitx5；桥接未加载时界面会显示明确错误，识别结果仍保留在历史记录
 
 ## 结构
 
